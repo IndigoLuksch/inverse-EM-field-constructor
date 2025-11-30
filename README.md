@@ -11,4 +11,4 @@ Approach:
 
 ## Files 
 
-[E_field_notebook](initial_attempt/E_field_notebook.jpynb) notebook contains initial attempts create a convolutional NN for an electric field
+[E_field_notebook](1_initial_attempt/E_field_notebook.jpynb) notebook contains initial attempts create a convolutional NN for an electric field
