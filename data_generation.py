@@ -24,7 +24,7 @@ class CuboidDataGenerator:
         self.H = None
         self.points = None
 
-    def generate_data(self, batch_size):
+    def generate_data(self, batch_size=2000):
         #---generate magpy magnet collection---
         pbar = tqdm(total=config.TRAINING_CONFIG['dataset_size'], desc="Creating magnets")
         sampler = qmc.LatinHypercube(d=6)
@@ -170,6 +170,6 @@ class CuboidDataGenerator:
 
 if __name__ == '__main__':
     generator = CuboidDataGenerator()
-    generator.generate_data()
+    generator.generate_data(2000)
     generator.save_training_data()
     generator.visualize_random_sample()
