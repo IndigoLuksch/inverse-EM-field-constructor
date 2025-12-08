@@ -2,7 +2,7 @@ import numpy as np
 from tqdm import tqdm
 import magpylib as magpy
 import random
-import numba
+import math
 from scipy.stats import qmc
 import time
 import config
@@ -61,25 +61,27 @@ class CuboidDataGenerator:
         points = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
 
         #---calculate magnetic field at each AOI point
-        pbar = tqdm(total = config.TRAINING_CONFIG['dataset_size'], desc='Calculating H fields')
+        pbar = tqdm(total = math.ceil(config.TRAINING_CONFIG['dataset_size']/batch_size), desc='Calculating H fields', unit='batch')
 
-        for batch_start in range(0, batch_size, config.TRAINING_CONFIG['dataset_size']):
+        for batch_start in range(0, config.TRAINING_CONFIG['dataset_size'], batch_size):
             batch_end = min(batch_start + batch_size, config.TRAINING_CONFIG['dataset_size'])
             H_batch = np.zeros((batch_end-batch_start,  # number of magnets
                           points.shape[0],  # number of points
                           2))  # Hx, Hy
             for i in range(batch_end-batch_start):
                 H_batch[i] = magpy.getH(magnets[i], points)[:, :2]  #only store Hx, Hy
-                pbar.update(1)
             if batch_start == 0:
                 np.savez('generated_data.npz', H=H_batch, magnets=magnets, points=points)
             else:
                 data = np.load('generated_data.npz')
-                H_cumulative = np.concatenate(data['H'], H_batch)
+                H_cumulative = np.concatenate( [ data['H'], H_batch ] )
                 np.savez('generated_data.npz', H=H_cumulative, magnets=magnets, points=points)
+            pbar.update(1)
         pbar.close()
 
         #store as instance variables
+        data = np.load('generated_data.npz')
+        H = data['H']
         self.magnets = magnets
         self.H = H
         self.points = points
@@ -170,6 +172,5 @@ class CuboidDataGenerator:
 
 if __name__ == '__main__':
     generator = CuboidDataGenerator()
-    generator.generate_data(2000)
-    generator.save_training_data()
+    generator.generate_data(1000)
     generator.visualize_random_sample()
