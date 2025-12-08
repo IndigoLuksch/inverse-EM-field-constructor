@@ -3,9 +3,8 @@ magpylib
 numpy
 tqdm
 scipy
-random
 numba
 matplotlib
 plotly
-time
+#random and time are inbuilt python modules
 #https://www.tensorflow.org/api_docs/python/tf/keras/applications/resnet50

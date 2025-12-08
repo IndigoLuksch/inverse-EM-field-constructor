@@ -46,7 +46,7 @@ MODEL_CONFIG = {
 
 #training parameters (paper Section II.D)
 TRAINING_CONFIG = {
-    'dataset_size': 600, #change to 60 000
+    'dataset_size': 60000, #change to 60 000
     'train_split': 0.6,
     'val_split': 0.3,
     'test_split': 0.1,
