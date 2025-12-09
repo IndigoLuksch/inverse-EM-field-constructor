@@ -14,10 +14,10 @@ COPY config.py .
 COPY data.py .
 
 #create directories for outputs
-RUN mkdir -p /app/data /app/models /app/logs /app/results
+RUN mkdir -p /app/data /app/models /app/logs /app/results /tfrecords
 
 #environment variable to avoid matplotlib display issues
 ENV MPLBACKEND=Agg
 
 #run data when container starts
-CMD ["python", "data.py"]
+CMD ["python", "run.py"]

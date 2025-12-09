@@ -26,7 +26,7 @@ class Dataset:
         self.magnets = None
         self.H = None
         self.points = None
-        self.local_path = 'tfrecords'
+        self.local_path = '/tfrecords'
         self.gcs_path = None
         self.bucket = None
 
@@ -88,6 +88,7 @@ class Dataset:
 
         #---save metadata---
         np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
+        self.upload_to_gcloud(local_path=f'{self.local_path}/metadata.npz', gcs_path=f'{self.gcs_path}/metadata.npz')
 
         #---calculate magnetic field at each AOI point; save as tfrecord; save in batches (e.g. to reduce gcs API calls)
         num_batches = math.ceil(config.DATASET_CONFIG['dataset_size'] / samples_per_batch)
@@ -114,8 +115,10 @@ class Dataset:
             self.upload_to_gcloud(local_fullpath, gcs_fullpath)
             os.remove(local_fullpath)
 
+            print("Data generated and saved to gcloud")
 
 
+    #need to fix:
     def visualize_random_sample(self):
         '''
         VIBE CODED
@@ -127,7 +130,7 @@ class Dataset:
         • Magnetization vector as an arrow
         '''
         if self.magnets is None:
-            metadata = np.load('data/metadata.npz', allow_pickle=True)
+            metadata = np.load(f'{self.local_path}/metadata.npz', allow_pickle=True)
             self.magnets = metadata['magnets']
             self.points = metadata['points']
 
@@ -203,11 +206,4 @@ class Dataset:
         self.magnets = data['magnets']
         self.points = data['points']
         print("Data loaded")
-
-if __name__ == '__main__':
-    print("data.py is running :)")
-    generator = Dataset()
-    generator.setup_gcloud()
-    generator.generate_cubiod_data(1000)
-    generator.visualize_random_sample()
 
