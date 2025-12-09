@@ -1,20 +1,24 @@
 import numpy as np
 from tqdm import tqdm
+import tensorflow as tf
 import magpylib as magpy
 import random
 from scipy.stats import qmc
+import os
+from google.cloud import storage
 import time
-import config
+import math
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
+import config
 random.seed(config.RANDOM_SEED)
 
 #magnetic field data generation
-class CuboidDataGenerator:
+class Dataset:
     '''
     Generates magnetic field data for: 
-    • Cuboid magnets with random positions (x, y), side lengths (a, b), and magnetisations (Mx, My)
+    • Magnets with random positions (x, y), dimensions (a, b), and magnetisations (Mx, My)
     • Associated magnetic field maps (H_x, H_y) over the area of interest 
     using latin hypercube sampling and following the specifications in config.py
     '''
@@ -22,12 +26,37 @@ class CuboidDataGenerator:
         self.magnets = None
         self.H = None
         self.points = None
+        self.local_path = 'tfrecords'
+        self.gcs_path = None
+        self.bucket = None
 
-    def generate_data(self, batch_size=2000):
+    def setup_gcloud(self):
+        '''Initialise Google Cloud Storage and bucket'''
+        storage_client = storage.Client()
+        bucket_name = config.DATASET_CONFIG['bucket_name']
+        self.bucket = storage_client.get_bucket(bucket_name)
+        print(f"Bucket {bucket_name} created")
+
+    def upload_to_gcloud(self, local_path, gcs_path):
+        '''Upload a file to GCS'''
+        blob = self.bucket.blob(gcs_path)
+        blob.upload_from_filename(local_path)
+
+    @staticmethod
+    def serialise_example(H, params): #params is a np array
+        '''Convert H, params to tfrecord file format'''
+        feature = {
+            'H' : tf.train.Feature(float_list=tf.train.FloatList(value=H.flatten())),
+            'params' : tf.train.Feature(float_list=tf.train.FloatList(value=params)),
+        }
+
+        example = tf.train.Example(features=tf.train.Features(feature=feature))
+        return example.SerializeToString()
+
+    def generate_cubiod_data(self, samples_per_batch): #cuboid-shaped magnets
         #---generate magpy magnet collection---
-        pbar = tqdm(total=config.TRAINING_CONFIG['dataset_size'], desc="Creating magnets")
         sampler = qmc.LatinHypercube(d=6)
-        samples = sampler.random(n=config.TRAINING_CONFIG['dataset_size'])
+        samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
 
         x_samples = qmc.scale(samples[:,0:1], -config.AOI_CONFIG['x_dim'], config.AOI_CONFIG['x_dim']).flatten() #twice AOI size
         y_samples = qmc.scale(samples[:,1:2], -config.AOI_CONFIG['y_dim'], config.AOI_CONFIG['y_dim']).flatten() #twice AOI size
@@ -37,13 +66,11 @@ class CuboidDataGenerator:
         My_samples = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
 
         magnets = []
-        for i in range(config.TRAINING_CONFIG['dataset_size']):
+        for i in tqdm(range(config.DATASET_CONFIG['dataset_size'])):
             magnet = magpy.magnet.Cuboid(polarization=(Mx_samples[i], My_samples[i], 0),
                                          dimension=(a_samples[i], b_samples[i], 1),
                                          position=(x_samples[i], y_samples[i], 0))
             magnets.append(magnet)
-            pbar.update(1)
-        pbar.close()
 
         #---generate AOI points---
         x = np.arange(-config.AOI_CONFIG['x_dim'] / 2,
@@ -60,23 +87,34 @@ class CuboidDataGenerator:
         points = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
 
         #---save metadata---
-        np.savez('data/metadata.npz', magnets=magnets, points=points)
+        np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
 
-        #---calculate magnetic field at each AOI point; save in batches to avoid memory overload
-        pbar = tqdm(total = config.TRAINING_CONFIG['dataset_size'], desc='Calculating H fields')
+        #---calculate magnetic field at each AOI point; save as tfrecord; save in batches (e.g. to reduce gcs API calls)
+        num_batches = math.ceil(config.DATASET_CONFIG['dataset_size'] / samples_per_batch)
+        for batch_idx in range(num_batches):
+            batch_start = batch_idx * samples_per_batch
+            batch_end = min(batch_start + samples_per_batch, config.DATASET_CONFIG['dataset_size'])
 
-        for i in range(config.TRAINING_CONFIG['dataset_size']):
-            H_single = magpy.getH(magnets[i], points)[:, :2]  #only store Hx, Hy
-            np.save(f'data/H_{i:06d}.npy', H_single) #save, padded with zeros to 6 s.f.
-            pbar.update(1)
-        pbar.close()
+            filename = f'{batch_idx:04d}-of-{num_batches}.tfrecord'
+            local_fullpath = f'{self.local_path}/{filename}'
+            gcs_fullpath = f'{self.gcs_path}/{filename}'
 
-        #store as instance variables
-        # data = np.load('generated_data.npz')
-        # H = data['H']
-        # self.magnets = magnets
-        # self.H = H
-        # self.points = points
+            #generate H and save tfrecord
+            with tf.io.TFRecordWriter(local_fullpath) as writer:
+                H_single = magpy.getH(magnets[i], points)[:, :2].astype(np.float32)
+                params = np.array([
+                    magnets[i].position[0], magnets[i].position[1],
+                    magnets[i].dimension[0], magnets[i].dimension[1],
+                    magnets[i].polarization[0], magnets[i].polarization[1]
+                ], dtype=np.float32)
+
+                writer.write(self.serialise_example(H_single, params))
+
+            #upload to gcs
+            self.upload_to_gcloud(local_fullpath, gcs_fullpath)
+            os.remove(local_fullpath)
+
+
 
     def visualize_random_sample(self):
         '''
@@ -167,7 +205,9 @@ class CuboidDataGenerator:
         print("Data loaded")
 
 if __name__ == '__main__':
-    generator = CuboidDataGenerator()
-    #generator.generate_data(1000)
+    print("data.py is running :)")
+    generator = Dataset()
+    generator.setup_gcloud()
+    generator.generate_cubiod_data(1000)
     generator.visualize_random_sample()
 

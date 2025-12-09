@@ -16,6 +16,14 @@ NOTES
 • all SI units
 '''
 
+DATASET_CONFIG = {
+    'bucket_name': 'inverse-em-bucket', #gcloud
+    'dataset_size': 100, #change to 60 000
+    'train_split': 0.6,
+    'val_split': 0.3,
+    'test_split': 0.1,
+}
+
 MAGNET_CONFIG = {
     'height' : 0.1, #m
     'dim_min' : 0.1, #m
@@ -46,18 +54,14 @@ MODEL_CONFIG = {
 
 #training parameters (paper Section II.D)
 TRAINING_CONFIG = {
-    'dataset_size': 60000, #change to 60 000
-    'train_split': 0.6,
-    'val_split': 0.3,
-    'test_split': 0.1,
     'batch_size': 60,
     'epochs': 100,
     'initial_lr': 0.1,
-    'lr_decay_factor': 0.1,
-    'lr_decay_epochs': [30, 60],  #decay lr at these epochs
+    #'lr_decay_factor': 0.1,
+    #'lr_decay_epochs': [30, 60],  #decay lr at these epochs
     'momentum': 0.9,
-    'weight_decay': 1e-4,
-    'loss': 'mse',
+    #'weight_decay': 1e-4,
+    'loss_metric': 'mae',
 }
 
 #data normalisation ranges

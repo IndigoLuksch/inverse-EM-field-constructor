@@ -1,10 +1,7 @@
-tensorflow.keras.application.resnet50
-magpylib
 numpy
 tqdm
+tensorflow
+magpylib
 scipy
-numba
+google-cloud-storage
 matplotlib
-plotly
-#random and time are inbuilt python modules
-#https://www.tensorflow.org/api_docs/python/tf/keras/applications/resnet50
