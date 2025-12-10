@@ -4,6 +4,7 @@ import tensorflow as tf
 import magpylib as magpy
 import random
 from scipy.stats import qmc
+from sklearn.model_selection import train_test_split
 import os
 from google.cloud import storage
 import time
@@ -26,8 +27,9 @@ class Dataset:
         self.magnets = None
         self.H = None
         self.points = None
-        self.local_path = '/tfrecords'
-        self.gcs_path = None
+        self.num_points = None
+        self.local_path = 'tfrecords'
+        self.gcs_path = 'tfrecords'
         self.bucket = None
 
     def setup_gcloud(self):
@@ -53,7 +55,24 @@ class Dataset:
         example = tf.train.Example(features=tf.train.Features(feature=feature))
         return example.SerializeToString()
 
-    def generate_cubiod_data(self, samples_per_batch): #cuboid-shaped magnets
+    @staticmethod
+    def deserialise_example(serialised_example):
+        '''parse single tfrecord to tensor'''
+
+        feature = {
+            'H': tf.io.FixedLenFeature([self.num_points * 2], tf.float32),
+            'params': tf.io.FixedLenFeature([6], tf.float32),
+        }
+
+        parsed = tf.io.parse_single_example(serialised_example , feature)
+
+        # Reshape H from flat array back to original shape
+        H = tf.reshape(parsed['H'], [self.num_points, 2])  # [n_points, 2] for (Hx, Hy)
+        params = parsed['params']
+
+        return H, params
+
+    def generate_cubiod_data(self, num_batches=10): #cuboid-shaped magnets
         #---generate magpy magnet collection---
         sampler = qmc.LatinHypercube(d=6)
         samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
@@ -85,37 +104,79 @@ class Dataset:
         Z = np.zeros_like(X)
 
         points = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])
+        self.num_points = len(points)
 
         #---save metadata---
-        np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
-        self.upload_to_gcloud(local_path=f'{self.local_path}/metadata.npz', gcs_path=f'{self.gcs_path}/metadata.npz')
+        #np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
+        #self.upload_to_gcloud(local_path=f'{self.local_path}/metadata.npz', gcs_path=f'{self.gcs_path}/metadata.npz')
+
+        # ---split batch indices---
+        split_idx = np.arange(num_batches)
+        train_split_idx, val_split_idx = train_test_split(split_idx,
+                                              test_size=(config.DATASET_CONFIG['val_split'] + config.DATASET_CONFIG[
+                                                  'test_split']),
+                                              random_state=config.RANDOM_SEED)
+        val_split_idx, test_split_idx = train_test_split(val_split_idx,
+                                             test_size=(config.DATASET_CONFIG[
+                                                 'test_split']/(config.DATASET_CONFIG['val_split'] + config.DATASET_CONFIG[
+                                                 'test_split'])), # test/(test+val)
+                                             random_state=config.RANDOM_SEED)
+
+        samples_per_batch = -(config.DATASET_CONFIG['dataset_size'] // -num_batches)  # ceiling division
 
         #---calculate magnetic field at each AOI point; save as tfrecord; save in batches (e.g. to reduce gcs API calls)
-        num_batches = math.ceil(config.DATASET_CONFIG['dataset_size'] / samples_per_batch)
-        for batch_idx in range(num_batches):
-            batch_start = batch_idx * samples_per_batch
-            batch_end = min(batch_start + samples_per_batch, config.DATASET_CONFIG['dataset_size'])
 
-            filename = f'{batch_idx:04d}-of-{num_batches}.tfrecord'
-            local_fullpath = f'{self.local_path}/{filename}'
-            gcs_fullpath = f'{self.gcs_path}/{filename}'
+        for i, split in enumerate([train_split_idx, val_split_idx, test_split_idx]):
+            for batch_idx in tqdm(split, desc=f"Generating {'train' if i==0 else 'val' if i==1 else 'test'} data"):
+                name = ['train', 'val', 'test'][i]
+                filename = f'{name}-{batch_idx:04d}.tfrecord'
+                local_fullpath = f'{self.local_path}/{filename}'
+                os.makedirs(os.path.dirname(local_fullpath), exist_ok=True)
+                gcs_fullpath = f'{self.gcs_path}/{filename}'
 
-            #generate H and save tfrecord
-            with tf.io.TFRecordWriter(local_fullpath) as writer:
-                H_single = magpy.getH(magnets[i], points)[:, :2].astype(np.float32)
-                params = np.array([
-                    magnets[i].position[0], magnets[i].position[1],
-                    magnets[i].dimension[0], magnets[i].dimension[1],
-                    magnets[i].polarization[0], magnets[i].polarization[1]
-                ], dtype=np.float32)
+                #indices
+                batch_start = batch_idx * samples_per_batch
+                batch_end = min(batch_start + samples_per_batch, config.DATASET_CONFIG['dataset_size'])
 
-                writer.write(self.serialise_example(H_single, params))
+                #generate H and save tfrecord
+                with tf.io.TFRecordWriter(local_fullpath) as writer:
+                    for j in range(batch_start, batch_end):
+                        if magnets[j] is not None: #last batch may not contain samples_per_batch samples
+                            H_single = magpy.getH(magnets[j], points)[:, :2].astype(np.float32)
+                            params = np.array([
+                                magnets[j].position[0], magnets[j].position[1],
+                                magnets[j].dimension[0], magnets[j].dimension[1],
+                                magnets[j].polarization[0], magnets[j].polarization[1]
+                            ], dtype=np.float32)
 
-            #upload to gcs
-            self.upload_to_gcloud(local_fullpath, gcs_fullpath)
-            os.remove(local_fullpath)
+                            writer.write(self.serialise_example(H_single, params))
 
-            print("Data generated and saved to gcloud")
+                #upload to gcs®
+                self.upload_to_gcloud(local_fullpath, gcs_fullpath)
+                os.remove(local_fullpath)
+
+
+    def load_split_datasets(self, split='train'):
+        '''tf dataset with AUTOTUNE to load from gcloud'''
+        fullpath = f'{self.gcs_path}/{split}-*.tfrecord'
+        files = tf.io.gfile.glob(fullpath)
+
+        dataset = tf.data.Dataset.from_tensor_slices(files) #dataset of filenames
+
+        #load data (not immediately)
+        dataset = dataset.interleave( #interleave --> simultaneous
+            lambda x : tf.data.TFRecordDataset(x), #filename --> TFRec reads file
+            cycle_length=tf.data.AUTOTUNE,
+            num_parallel_calls=tf.data.AUTOTUNE #AUTOTUNE for optimised parallel loading
+        )
+
+        #parse tfrecord to tensors
+        dataset = dataset.map(self.deserialise_example,
+                              num_parallel_calls=tf.data.AUTOTUNE)
+
+        dataset = dataset.batch(config.DATASET_CONFIG['batch_size'])
+
+        dataset = dataset.prefetch(tf.data.AUTOTUNE) #prefetch next batch during training
 
 
     #need to fix:
@@ -207,3 +268,6 @@ class Dataset:
         self.points = data['points']
         print("Data loaded")
 
+generator = Dataset()
+generator.setup_gcloud()
+generator.generate_cubiod_data()  # num_batches should <= dataset_size
