@@ -1,9 +1,16 @@
 from tensorflow.keras import layers, models, optimizers, callbacks
+import magpylib as magpy
 from tensorflow.keras.losses import MeanSquaredError
+from keras import backend as K
 from tensorflow.keras.applications import ResNet50
 import numpy as np
+import tensorflow as tf
 
 import config
+import data
+import magnet_field_tf
+
+Dataset = data.Dataset()
 
 def create_model(input_shape=config.MODEL_CONFIG['input_shape'], output_dim=config.MODEL_CONFIG['output_dim']):
     '''
@@ -23,6 +30,66 @@ def create_model(input_shape=config.MODEL_CONFIG['input_shape'], output_dim=conf
     print("ResNet50 model created")
     return model
 
+def compute_loss_single(params_true, params_pred):
+    """
+    computes loss for pair of parameters values
+    """
+    #convert to np
+    params_true = np.array(params_true, dtype=np.float32)
+    params_pred = np.array(params_pred, dtype=np.float32)
+
+    #penalise negative dimensions (magpylib doesn't allow negative dimensions)
+    if np.min(params_pred[2:4]) < 0:
+        return 4.0 * (1.0 + np.sum(np.abs(params_pred[2:4][params_pred[2:4] < 0])))
+
+    #create magnets
+    magnet_true = magpy.magnet.Cuboid(
+        position=(float(params_true[0]), float(params_true[1]), 2.5),
+        dimension=(float(params_true[2]), float(params_true[3]), 1),
+        polarization=(float(params_true[4]), float(params_true[5]), 0)
+    )
+    magnet_pred = magpy.magnet.Cuboid(
+        position=(float(params_pred[0]), float(params_pred[1]), 2.5),
+        dimension=(float(params_pred[2]), float(params_pred[3]), 1),
+        polarization=(float(params_pred[4]), float(params_pred[5]), 0)
+    )
+
+    #compute H
+    H_true = magpy.getH(magnet_true, Dataset.points)
+    H_pred = magpy.getH(magnet_pred, Dataset.points)
+
+    return np.mean((H_true - H_pred)**2).astype(np.float32)
+
+def custom_loss(params_true, params_pred):
+    """
+    Pure TensorFlow implementation of magnetic field loss.
+
+    MUCH faster than the magpylib wrapper because:
+    - No Python/NumPy function calls
+    - Automatic differentiation (analytical gradients)
+    - GPU acceleration
+    - No sequential processing
+    """
+
+    # Convert observation points to TensorFlow tensor
+    observation_points = tf.constant(Dataset.points, dtype=tf.float32)
+
+    # Add penalty for negative dimensions
+    # Use soft constraint for smooth gradients
+    negative_penalty = tf.reduce_sum(tf.maximum(0.0, -params_pred[:, 2:4])**2)
+
+    # Compute physics loss using TensorFlow implementation
+    physics_loss = magnet_field_tf.compute_field_mse_loss(
+        params_true,
+        params_pred,
+        observation_points
+    )
+
+    # Total loss = physics + constraint penalty
+    total_loss = physics_loss + 10.0 * negative_penalty
+
+    return total_loss
+
 def compile_model(model, initial_lr=0.1):
     optimizer = optimizers.SGD(
         learning_rate=initial_lr,
@@ -33,8 +100,8 @@ def compile_model(model, initial_lr=0.1):
 
     model.compile(
         optimizer=optimizer,
-        loss=MeanSquaredError(),
-        metrics=[config.TRAINING_CONFIG['loss_metric']],
+        loss=custom_loss,
+        metrics=[custom_loss] #config.TRAINING_CONFIG['loss_metric'],
     )
 
     return model

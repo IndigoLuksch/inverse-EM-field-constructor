@@ -15,3 +15,16 @@ services:
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcloud-key.json
       - GOOGLE_CLOUD_PROJECT=inverse-em-constructor
+
+workerPoolSpecs:
+  - machineSpec:
+      machineType: n1-standard-8
+      acceleratorType: NVIDIA_TESLA_V100
+      acceleratorCount: 1
+    replicaCount: 1
+    containerSpec:
+      imageUri: gcr.io/citric-optics-481013-q6/inverse-em-trainer:latest
+# This section tells Vertex AI to use Preemptible/Spot resources
+scheduling:
+  disableRetries: false
+  strategy: FLEXIBLE

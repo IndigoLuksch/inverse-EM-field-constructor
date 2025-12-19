@@ -9,6 +9,7 @@ import config
 import magnetic_field_painter
 import data
 Dataset = data.Dataset()
+import magnet_field_tf
 
 def visualise_H(filename, H1, H2, title1="H Field 1", title2="H Field 2", show_vectors=True, denormalize=True):
     """
@@ -168,14 +169,21 @@ for i in range(iterations):
     H_difs_temp = []
     for i, polarisation in enumerate([(Mx, My, 0), (-Mx, My, 0), (Mx, -My, 0), (-Mx, -My, 0)]):
         #create magnet
-        magnet = magpy.magnet.Cuboid(polarization=(Mx, My, 0),
+        magnet = magpy.magnet.Cuboid(polarization=polarisation,
                                      dimension=(np.abs(a), np.abs(b), 1),
                                      position=(x, y, 2.5)
                                      )
         magnets.add(magnet)
 
         #calculate resulting H, metrics
-        H_pred = magpy.getH(magnets, Dataset.points)
+        #H_pred = magpy.getH(magnets, Dataset.points)
+
+        H_pred = magnet_field_tf.compute_H_field(
+            observers=Dataset.points,
+            dimension=[np.abs(a), np.abs(b), 1],
+            polarization=polarisation,
+            position=(x, y, 2.5)
+        )
 
         #drop z
         H_pred = H_pred[:, :2]
