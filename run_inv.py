@@ -1,6 +1,8 @@
 import tensorflow as tf
 import numpy as np
 import magpylib as magpy
+import matplotlib
+matplotlib.use('MacOSX')  # Ensure proper backend for macOS
 import matplotlib.pyplot as plt
 
 import config
@@ -70,7 +72,7 @@ def visualise_H(filename, H1, H2, title1="H Field 1", title2="H Field 2", show_v
     plt.close()
 
 #---parameters
-iterations = 10
+iterations = 200
 
 #---load model---
 print("\n\n---Loading model---")
@@ -85,11 +87,13 @@ print("Magnetic field created")
 #---iterate---
 H = H_actual #already normalised
 magnets = magpy.Collection()
+maes = []
 
 for i in range(iterations):
     #predict
     H_in = np.expand_dims(H, axis=0)
     params_normalised = model.predict(H_in, verbose=0) #input normalised H, output normalised params
+    params_normalised /= 1
 
     #denormalise params
     x = params_normalised[0][0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim']
@@ -99,15 +103,15 @@ for i in range(iterations):
     Mx = params_normalised[0][4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min']
     My = params_normalised[0][5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min']
 
-    print(f"\nIteration {i+1} - Predicted magnet parameters:")
-    print(f"  Position: ({x:.2f}, {y:.2f}) m")
-    print(f"  Dimensions: ({a:.2f}, {b:.2f}) m")
-    print(f"  Magnetization: ({Mx:.3f}, {My:.3f}) T")
+    #print(f"\nIteration {i+1} - Predicted magnet parameters:")
+    #print(f"  Position: ({x:.2f}, {y:.2f}) m")
+    #print(f"  Dimensions: ({a:.2f}, {b:.2f}) m")
+    #print(f"  Magnetization: ({Mx:.3f}, {My:.3f}) T")
 
     #create magnet
     magnet = magpy.magnet.Cuboid(polarization=(Mx, My, 0),
-                                 dimension=(a, b, 1),
-                                 position=(x, y, 0)
+                                 dimension=(np.abs(a), np.abs(b), 1),
+                                 position=(x, y, 2.5)
                                  )
     magnets.add(magnet)
 
@@ -127,8 +131,14 @@ for i in range(iterations):
     #normalise
     H_pred = H_pred / Dataset.H_STD
 
-    visualise_H(str(i), H, H_pred, title1="Target", title2="Model")
+    #visualise_H(str(i), H, H_pred, title1="Target", title2="Model")
     H_dif = H - H_pred
     mae = np.mean(np.abs(H_dif))
+    maes.append(mae)
     print(f"Iteration {i+1}: mae = {mae:.5f}")
     H = H_dif
+
+plt.plot(maes)
+plt.xlabel('iteration')
+plt.ylabel('mae')
+plt.show()
