@@ -56,5 +56,7 @@ A ResNet50 model was trained on 60000 data points (cuboidal magnets in a 2D plan
 Model files are large so I have not uploaded them here. Contact me if you would like access :) 
 
 model1: params MSE loss, field calculated in plane of magnet 
+
 model2: params MSE loss, field calculated just above magnet --> less extreme values 
+
 model3: hybrid loss (field : params = 1 : 20) 
