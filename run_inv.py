@@ -10,6 +10,7 @@ import magnetic_field_painter
 import data
 Dataset = data.Dataset()
 import magnet_field_tf
+import model as Model
 
 def visualise_H(filename, H1, H2, title1="H Field 1", title2="H Field 2", show_vectors=True, denormalize=True):
     """
@@ -94,8 +95,9 @@ use_generated_data = True  # Set to False to use painted magnetic field
 
 #---load model---
 print("\n\n---Loading model---")
-model_name = "model1.keras"
-model = tf.keras.models.load_model(f"models/{model_name}")
+model_name = "model3.keras"
+model = tf.keras.models.load_model(f"models/{model_name}",
+                                   custom_objects={'custom_loss' : Model.custom_loss})
 print("Model loaded")
 
 #---get magnetic field---
