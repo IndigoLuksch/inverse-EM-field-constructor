@@ -52,181 +52,6 @@ class Dataset:
         #---data normalisation---
         self.H_STD = 1000
 
-    def setup_gcloud(self):
-        '''Initialise Google Cloud Storage and bucket'''
-        storage_client = storage.Client()
-        bucket_name = config.DATASET_CONFIG['bucket_name']
-        self.bucket = storage_client.get_bucket(bucket_name)
-        print(f"Bucket {bucket_name} created")
-
-    def upload_to_gcloud(self, local_path, gcs_path):
-        '''Upload a file to GCS'''
-        blob = self.bucket.blob(gcs_path)
-        blob.upload_from_filename(local_path)
-
-    @staticmethod
-    def serialise_example(H, params): #params is a np array
-        '''Convert H, params to tfrecord file format'''
-        feature = {
-            'H' : tf.train.Feature(float_list=tf.train.FloatList(value=H.flatten())),
-            'params' : tf.train.Feature(float_list=tf.train.FloatList(value=params)),
-        }
-
-        example = tf.train.Example(features=tf.train.Features(feature=feature))
-        return example.SerializeToString()
-
-    def deserialise_normalise_example(self, serialised_example):
-        '''parse single tfrecord to tensor and reshape to model input size'''
-
-        feature = {
-            'H': tf.io.FixedLenFeature([self.num_points * 2], tf.float32),
-            'params': tf.io.FixedLenFeature([6], tf.float32),
-        }
-
-        parsed = tf.io.parse_single_example(serialised_example , feature)
-
-        #reshape H to input shape of ResNet50
-        H = tf.reshape(parsed['H'], [int(config.AOI_CONFIG['x_dim'] / config.AOI_CONFIG['resolution']) + 1,
-                                      int(config.AOI_CONFIG['y_dim'] / config.AOI_CONFIG['resolution']) + 1,
-                                      2])
-        H = tf.image.resize(H, [224, 224], method='bilinear')
-
-        #normalise H
-        H_MEAN = 0.0
-        H_STD = self.H_STD  #estimated typical max H (across all data)
-        H = (H - H_MEAN) / H_STD
-
-        #normalise params to [0, 1] using ranges from config.py
-        params = parsed['params']
-        params = tf.stack([
-            (params[0] + config.AOI_CONFIG['x_dim']) / (2 * config.AOI_CONFIG['x_dim']),  # x: -30 to 30 -> 0 to 1
-            (params[1] + config.AOI_CONFIG['y_dim']) / (2 * config.AOI_CONFIG['y_dim']),  # y: -30 to 30 -> 0 to 1
-            (params[2] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # a
-            (params[3] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # b
-            (params[4] - config.MAGNET_CONFIG['M_min']) / (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']),  # Mx
-            (params[5] - config.MAGNET_CONFIG['M_min']) / (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']),  # My
-        ])
-
-        return H, params
-
-    def generate_cuboid_data(self, use_gcs=False, num_batches=1000):
-        #---generate magpy magnet collection---
-        sampler = qmc.LatinHypercube(d=6)
-        samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
-
-        x_samples = qmc.scale(samples[:,0:1], -config.AOI_CONFIG['x_dim'], config.AOI_CONFIG['x_dim']).flatten() #twice AOI size
-        y_samples = qmc.scale(samples[:,1:2], -config.AOI_CONFIG['y_dim'], config.AOI_CONFIG['y_dim']).flatten() #twice AOI size
-        a_samples = qmc.scale(samples[:,2:3], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
-        b_samples = qmc.scale(samples[:, 3:4], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
-        Mx_samples = qmc.scale(samples[:,4:5], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
-        My_samples = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
-
-        #---save metadata---
-        #np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
-        #self.upload_to_gcloud(local_path=f'{self.local_path}/metadata.npz', gcs_path=f'{self.gcs_path}/metadata.npz')
-
-        # ---split batch indices---
-        split_idx = np.arange(num_batches)
-        train_split_idx, val_split_idx = train_test_split(split_idx,
-                                              test_size=(config.DATASET_CONFIG['val_split'] + config.DATASET_CONFIG[
-                                                  'test_split']),
-                                              random_state=config.RANDOM_SEED)
-        val_split_idx, test_split_idx = train_test_split(val_split_idx,
-                                             test_size=(config.DATASET_CONFIG[
-                                                 'test_split']/(config.DATASET_CONFIG['val_split'] + config.DATASET_CONFIG[
-                                                 'test_split'])), # test/(test+val)
-                                             random_state=config.RANDOM_SEED)
-
-        samples_per_batch = -(config.DATASET_CONFIG['dataset_size'] // -num_batches)  # ceiling division
-
-        #---calculate magnetic field at each AOI point; save as tfrecord; save in batches (e.g. to reduce gcs API calls)---
-        #if use_gcs=True: save locally, upload to gcs, delete local copy
-        #if use_gcs=False: save locally
-
-        #generate, upload data
-        for i, split in enumerate([train_split_idx, val_split_idx, test_split_idx]):
-            for batch_idx in tqdm(split, desc=f"Generating {'train' if i==0 else 'val' if i==1 else 'test'} data"):
-                name = ['train', 'val', 'test'][i]
-                filename = f'{name}-{batch_idx:04d}.tfrecord'
-                local_fullpath = f'{self.local_path}/{filename}'
-                os.makedirs(os.path.dirname(local_fullpath), exist_ok=True)
-                if use_gcs:
-                    gcs_blob_fullpath = f'{self.gcs_blob_path}/{filename}'
-
-                #indices
-                batch_start = batch_idx * samples_per_batch
-                batch_end = min(batch_start + samples_per_batch, config.DATASET_CONFIG['dataset_size'])
-
-                #generate H and save tfrecord
-                with tf.io.TFRecordWriter(local_fullpath) as writer:
-                    for j in range(batch_start, batch_end):
-                        #if x_samples[j] is not None: #last batch may not contain samples_per_batch samples
-                        magnet = magpy.magnet.Cuboid(polarization=(Mx_samples[j], My_samples[j], 0),
-                                                     dimension=(a_samples[j], b_samples[j], 1),
-                                                     position=(x_samples[j], y_samples[j], 2.5))
-                        H_single = magpy.getH(magnet, self.points)[:, :2].astype(np.float32)
-                        params = np.array([x_samples[j], y_samples[j],
-                                           a_samples[j], b_samples[j],
-                                           Mx_samples[j], My_samples[j]
-                                           ], dtype=np.float32)
-
-                        writer.write(self.serialise_example(H_single, params))
-
-                #upload to gcs
-                if use_gcs:
-                    self.upload_to_gcloud(local_fullpath, gcs_blob_fullpath)
-                    os.remove(local_fullpath)
-
-    def load_split_datasets(self, split='train', use_gcs=False, prop_to_load=1.0):
-        '''tf dataset with AUTOTUNE to load from gcloud
-        prop_to_load: proportion of dataset to load (float)'''
-        if use_gcs:
-            fullpath = f'gs://{self.gcs_bucket_name}/{self.gcs_blob_path}/{split}-*.tfrecord'
-            files = tf.io.gfile.glob(fullpath)
-            if not files:
-                print(f"No files found at {fullpath}")
-        else:
-            import glob
-            fullpath = f'{self.local_path}/{split}-*.tfrecord'
-            files = glob.glob(fullpath)
-            if prop_to_load != 1.0:
-                random.shuffle(files)
-                files = files[0:(int(prop_to_load*len(files)))]
-
-            if not files:
-                print(f"No files found at {fullpath}. Make sure tfrecords exist locally.")
-
-        dataset = tf.data.Dataset.from_tensor_slices(tf.constant(files, dtype=tf.string))
-        dataset = dataset.shuffle(buffer_size=len(files))  #shuffle for better parallelisation
-
-        #better fcs performance
-        options = tf.data.Options()
-        options.experimental_deterministic = False
-
-        #load data with optimised settings
-        dataset = dataset.interleave(
-            lambda x: tf.data.TFRecordDataset(x, num_parallel_reads=1),
-            cycle_length=16,  #read 16 files simultan
-            block_length=8,  #read 8 records per file
-            num_parallel_calls=tf.data.AUTOTUNE,
-            deterministic=False
-        )
-
-        dataset = dataset.with_options(options)
-
-        #parse and batch
-        dataset = dataset.map(self.deserialise_normalise_example,
-                              num_parallel_calls=tf.data.AUTOTUNE)
-
-        dataset = dataset.batch(config.TRAINING_CONFIG['batch_size'],
-                                drop_remainder=True)  #drop incomplete batches
-
-        dataset = dataset.repeat()
-
-        dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
-
-        return dataset
-
     def visualise_random_sample(self, use_gcloud=False, split='train', num_samples=1):
         '''
         VIBE CODED
@@ -344,6 +169,224 @@ class Dataset:
         self.magnets = data['magnets']
         self.points = data['points']
         print("Data loaded")
+
+    #generate data as tf.dataset and save locally
+    def generate_cuboid_data_TF_dataset(self):
+        # ---generate magpy magnet collection---
+        sampler = qmc.LatinHypercube(d=6)
+        samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
+
+        x_samples = qmc.scale(samples[:, 0:1], -config.AOI_CONFIG['x_dim'],
+                              config.AOI_CONFIG['x_dim']).flatten()  # twice AOI size
+        y_samples = qmc.scale(samples[:, 1:2], -config.AOI_CONFIG['y_dim'],
+                              config.AOI_CONFIG['y_dim']).flatten()  # twice AOI size
+        a_samples = qmc.scale(samples[:, 2:3], config.MAGNET_CONFIG['dim_min'],
+                              config.MAGNET_CONFIG['dim_max']).flatten()
+        b_samples = qmc.scale(samples[:, 3:4], config.MAGNET_CONFIG['dim_min'],
+                              config.MAGNET_CONFIG['dim_max']).flatten()
+        Mx_samples = qmc.scale(samples[:, 4:5], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
+        My_samples = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
+
+        # ---save metadata---
+        #np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
+
+        name = ['train', 'val', 'test'][i]
+        filename = f'{name}-{batch_idx:04d}.tfrecord'
+        local_fullpath = f'{self.local_path}/{filename}'
+        os.makedirs(os.path.dirname(local_fullpath), exist_ok=True)
+
+        magnet = magpy.magnet.Cuboid(polarization=(Mx_samples[j], My_samples[j], 0),
+                                     dimension=(a_samples[j], b_samples[j], 1),
+                                     position=(x_samples[j], y_samples[j], 2.5))
+        H_single = magpy.getH(magnet, self.points)[:, :2].astype(np.float32)
+        params = np.array([x_samples[j], y_samples[j],
+                           a_samples[j], b_samples[j],
+                           Mx_samples[j], My_samples[j]
+                           ], dtype=np.float32)
+
+    #--------------------------------------
+    #---BELOW FUNCTIONS NO LONGER IN USE---
+    #previously used to save data as TFRecord and upload to gcloud
+    def setup_gcloud(self):
+        '''Initialise Google Cloud Storage and bucket'''
+        storage_client = storage.Client()
+        bucket_name = config.DATASET_CONFIG['bucket_name']
+        self.bucket = storage_client.get_bucket(bucket_name)
+        print(f"Bucket {bucket_name} created")
+
+    def upload_to_gcloud(self, local_path, gcs_path):
+        '''Upload a file to GCS'''
+        blob = self.bucket.blob(gcs_path)
+        blob.upload_from_filename(local_path)
+
+    @staticmethod
+    def serialise_example(H, params): #params is a np array
+        '''Convert H, params to tfrecord file format'''
+        feature = {
+            'H' : tf.train.Feature(float_list=tf.train.FloatList(value=H.flatten())),
+            'params' : tf.train.Feature(float_list=tf.train.FloatList(value=params)),
+        }
+
+        example = tf.train.Example(features=tf.train.Features(feature=feature))
+        return example.SerializeToString()
+
+    def deserialise_normalise_example(self, serialised_example):
+        '''parse single tfrecord to tensor and reshape to model input size'''
+
+        feature = {
+            'H': tf.io.FixedLenFeature([self.num_points * 2], tf.float32),
+            'params': tf.io.FixedLenFeature([6], tf.float32),
+        }
+
+        parsed = tf.io.parse_single_example(serialised_example , feature)
+
+        #reshape H to input shape of ResNet50
+        H = tf.reshape(parsed['H'], [int(config.AOI_CONFIG['x_dim'] / config.AOI_CONFIG['resolution']) + 1,
+                                      int(config.AOI_CONFIG['y_dim'] / config.AOI_CONFIG['resolution']) + 1,
+                                      2])
+        H = tf.image.resize(H, [224, 224], method='bilinear')
+
+        #normalise H
+        H_MEAN = 0.0
+        H_STD = self.H_STD  #estimated typical max H (across all data)
+        H = (H - H_MEAN) / H_STD
+
+        #normalise params to [0, 1] using ranges from config.py
+        params = parsed['params']
+        params = tf.stack([
+            (params[0] + config.AOI_CONFIG['x_dim']) / (2 * config.AOI_CONFIG['x_dim']),  # x: -30 to 30 -> 0 to 1
+            (params[1] + config.AOI_CONFIG['y_dim']) / (2 * config.AOI_CONFIG['y_dim']),  # y: -30 to 30 -> 0 to 1
+            (params[2] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # a
+            (params[3] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # b
+            (params[4] - config.MAGNET_CONFIG['M_min']) / (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']),  # Mx
+            (params[5] - config.MAGNET_CONFIG['M_min']) / (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']),  # My
+        ])
+
+        return H, params
+
+    #generate data as TFRecord and upload to gcloud (this is OVERKILL for the ~80GB dataset I'm using)
+    def generate_cuboid_data_TFRECORD(self, use_gcs=False, num_batches=1000):
+        #---generate magpy magnet collection---
+        sampler = qmc.LatinHypercube(d=6)
+        samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
+
+        x_samples = qmc.scale(samples[:,0:1], -config.AOI_CONFIG['x_dim'], config.AOI_CONFIG['x_dim']).flatten() #twice AOI size
+        y_samples = qmc.scale(samples[:,1:2], -config.AOI_CONFIG['y_dim'], config.AOI_CONFIG['y_dim']).flatten() #twice AOI size
+        a_samples = qmc.scale(samples[:,2:3], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
+        b_samples = qmc.scale(samples[:, 3:4], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
+        Mx_samples = qmc.scale(samples[:,4:5], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
+        My_samples = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
+
+        #---save metadata---
+        #np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
+        #self.upload_to_gcloud(local_path=f'{self.local_path}/metadata.npz', gcs_path=f'{self.gcs_path}/metadata.npz')
+
+        # ---split batch indices---
+        split_idx = np.arange(num_batches)
+        train_split_idx, val_split_idx = train_test_split(split_idx,
+                                              test_size=(config.DATASET_CONFIG['val_split'] + config.DATASET_CONFIG[
+                                                  'test_split']),
+                                              random_state=config.RANDOM_SEED)
+        val_split_idx, test_split_idx = train_test_split(val_split_idx,
+                                             test_size=(config.DATASET_CONFIG[
+                                                 'test_split']/(config.DATASET_CONFIG['val_split'] + config.DATASET_CONFIG[
+                                                 'test_split'])), # test/(test+val)
+                                             random_state=config.RANDOM_SEED)
+
+        samples_per_batch = -(config.DATASET_CONFIG['dataset_size'] // -num_batches)  # ceiling division
+
+        #---calculate magnetic field at each AOI point; save as tfrecord; save in batches (e.g. to reduce gcs API calls)---
+        #if use_gcs=True: save locally, upload to gcs, delete local copy
+        #if use_gcs=False: save locally
+
+        #generate, upload data
+        for i, split in enumerate([train_split_idx, val_split_idx, test_split_idx]):
+            for batch_idx in tqdm(split, desc=f"Generating {'train' if i==0 else 'val' if i==1 else 'test'} data"):
+                name = ['train', 'val', 'test'][i]
+                filename = f'{name}-{batch_idx:04d}.tfrecord'
+                local_fullpath = f'{self.local_path}/{filename}'
+                os.makedirs(os.path.dirname(local_fullpath), exist_ok=True)
+                if use_gcs:
+                    gcs_blob_fullpath = f'{self.gcs_blob_path}/{filename}'
+
+                #indices
+                batch_start = batch_idx * samples_per_batch
+                batch_end = min(batch_start + samples_per_batch, config.DATASET_CONFIG['dataset_size'])
+
+                #generate H and save tfrecord
+                with tf.io.TFRecordWriter(local_fullpath) as writer:
+                    for j in range(batch_start, batch_end):
+                        #if x_samples[j] is not None: #last batch may not contain samples_per_batch samples
+                        magnet = magpy.magnet.Cuboid(polarization=(Mx_samples[j], My_samples[j], 0),
+                                                     dimension=(a_samples[j], b_samples[j], 1),
+                                                     position=(x_samples[j], y_samples[j], 2.5))
+                        H_single = magpy.getH(magnet, self.points)[:, :2].astype(np.float32)
+                        params = np.array([x_samples[j], y_samples[j],
+                                           a_samples[j], b_samples[j],
+                                           Mx_samples[j], My_samples[j]
+                                           ], dtype=np.float32)
+
+                        writer.write(self.serialise_example(H_single, params))
+
+                #upload to gcs
+                if use_gcs:
+                    self.upload_to_gcloud(local_fullpath, gcs_blob_fullpath)
+                    os.remove(local_fullpath)
+
+    #goes with above generate_cuboid_data_TFRECORD function
+    def load_datasets_TFRECORD(self, use_gcs=False, split='train', prop_to_load=1.0):
+        '''tf dataset with AUTOTUNE to load from gcloud
+        prop_to_load: proportion of dataset to load (float)'''
+        if use_gcs:
+            fullpath = f'gs://{self.gcs_bucket_name}/{self.gcs_blob_path}/{split}-*.tfrecord'
+            files = tf.io.gfile.glob(fullpath)
+            if not files:
+                print(f"No files found at {fullpath}")
+        else:
+            import glob
+            fullpath = f'{self.local_path}/{split}-*.tfrecord'
+            files = glob.glob(fullpath)
+            if prop_to_load != 1.0:
+                random.shuffle(files)
+                files = files[0:(int(prop_to_load*len(files)))]
+
+            if not files:
+                print(f"No files found at {fullpath}. Make sure tfrecords exist locally.")
+
+        dataset = tf.data.Dataset.from_tensor_slices(tf.constant(files, dtype=tf.string))
+        dataset = dataset.shuffle(buffer_size=len(files))  #shuffle for better parallelisation
+
+        #better fcs performance
+        options = tf.data.Options()
+        options.experimental_deterministic = False
+
+        #load data with optimised settings
+        dataset = dataset.interleave(
+            lambda x: tf.data.TFRecordDataset(x, num_parallel_reads=1),
+            cycle_length=16,  #read 16 files simultan
+            block_length=8,  #read 8 records per file
+            num_parallel_calls=tf.data.AUTOTUNE,
+            deterministic=False
+        )
+
+        dataset = dataset.with_options(options)
+
+        #parse and batch
+        dataset = dataset.map(self.deserialise_normalise_example,
+                              num_parallel_calls=tf.data.AUTOTUNE)
+
+        dataset = dataset.batch(config.TRAINING_CONFIG['batch_size'],
+                                drop_remainder=True)  #drop incomplete batches
+
+        dataset = dataset.repeat()
+
+        dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
+
+        return dataset
+
+    #---ABOVE FUNCTIONS NO LONGER IN USE---
+    #--------------------------------------
+
 
 if __name__ == '__main__':
     print(f"running data.py ...")

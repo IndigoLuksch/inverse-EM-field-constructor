@@ -144,14 +144,6 @@ def custom_loss(params_true, params_pred):
     return total_loss
 
 def compile_model(model, initial_lr):
-    # optimizer = optimizers.SGD(
-    #     learning_rate=initial_lr,
-    #     momentum=config.TRAINING_CONFIG['momentum'],
-    #     weight_decay=1e-4,
-    #     nesterov=True,
-    #     clipnorm=1.0  # Clip gradients to prevent explosion/NaN
-    # )
-
     optimizer = optimizers.Adam(
         learning_rate=initial_lr,
         clipnorm=1.0  #clip gradients to stabilise
