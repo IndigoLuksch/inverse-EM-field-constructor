@@ -18,7 +18,7 @@ NOTES
 
 DATASET_CONFIG = {
     'bucket_name': 'inverse-em-2', #gcloud - new account
-    'dataset_size': 60000, #change to 60 000
+    'dataset_size': 60, #change to 60 000
     'train_split': 0.6,
     'val_split': 0.3,
     'test_split': 0.1,
@@ -46,7 +46,7 @@ VIBE
 #model parameters (paper Section II.D)
 MODEL_CONFIG = {
     'name': 'ResNeXt-50',
-    'input_shape': (224, 224, 2),  #H_x and H_y
+    'input_shape': (301, 301, 2),  #H_x and H_y
     'output_dim': 6,  #x, y, a, b, Mx, My
     'cardinality': 32,  #number of groups
     'base_width': 4,  #channels per group

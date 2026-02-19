@@ -29,7 +29,7 @@ class Dataset:
         self.points = None
 
         #---file paths---
-        self.local_path = './data/default_folder'
+        self.local_path = './data/12-02-26'
         self.gcs_blob_path = 'tfrecords'
         self.gcs_bucket_name = 'inverse-em-2'
         self.bucket = None
@@ -52,116 +52,77 @@ class Dataset:
         #---data normalisation---
         self.H_STD = 1000
 
-    def visualise_random_sample(self, use_gcloud=False, split='train', num_samples=1):
-        '''
-        VIBE CODED
+    def visualise_random_sample(self, split='train', num_samples=1):
+        dataset_path = f"{self.local_path}/{split}_ds"
 
-        Visualizes random samples from the tfrecord dataset showing:
-        • Magnetic field magnitude as heatmap
-        • Field direction as vector arrows
-        • Magnet position and dimensions as a rectangle
-        • Magnetization vector as an arrow
+        try:
+            dataset = tf.data.Dataset.load(dataset_path)
+        except Exception as e:
+            print(f"Failed to load dataset at {dataset_path}. Error: {e}")
+            return
 
-        Args:
-            use_gcloud: If True, load from GCS bucket. If False, load from local tfrecords
-            split: Which split to load from ('train', 'val', or 'test')
-            num_samples: Number of random samples to visualize
-        '''
-        # Get list of tfrecord files
-        if use_gcloud:
-            fullpath = f'gs://{self.gcs_bucket_name}/{self.gcs_blob_path}/{split}-*.tfrecord'
-            files = tf.io.gfile.glob(fullpath)
-            if not files:
-                print(f"No files found at {fullpath}")
-                return
-        else:
-            import glob
-            fullpath = f'{self.local_path}/{split}-*.tfrecord'
-            files = glob.glob(fullpath)
-            if not files:
-                print(f"No files found at {fullpath}. Make sure tfrecords exist locally.")
-                return
+        dataset = dataset.shuffle(buffer_size=1000).take(num_samples)
 
-        print(f"Found {len(files)} tfrecord files")
+        for idx, (H_field, params) in enumerate(dataset):
+            H_field = H_field.numpy()
+            params = params.numpy()
 
-        # Load dataset
-        dataset = tf.data.TFRecordDataset(files)
-        dataset = dataset.map(lambda x: tf.io.parse_single_example(x, {
-            'H': tf.io.FixedLenFeature([self.num_points * 2], tf.float32),
-            'params': tf.io.FixedLenFeature([6], tf.float32),
-        }))
-
-        # Randomly sample
-        dataset = dataset.shuffle(buffer_size=1000)
-        dataset = dataset.take(num_samples)
-
-        # Visualize each sample
-        for idx, sample in enumerate(dataset):
-            # Extract H field and params
-            H_flat = sample['H'].numpy()
-            params = sample['params'].numpy()
-
-            # Reshape H field: flat -> (301, 301, 2)
-            grid_size = int(config.AOI_CONFIG['x_dim'] / config.AOI_CONFIG['resolution']) + 1
-            H_field = H_flat.reshape(grid_size, grid_size, 2)
             Hx = H_field[:, :, 0]
             Hy = H_field[:, :, 1]
-            H_magnitude = np.sqrt(Hx**2 + Hy**2)
+            H_magnitude = np.sqrt(Hx ** 2 + Hy ** 2)
 
-            # Extract magnet parameters (unnormalized)
             pos_x, pos_y = params[0], params[1]
             dim_a, dim_b = params[2], params[3]
-            pol_Mx, pol_My = params[4], params[5]
+            pol_Mr, pol_Mtheta = params[4], params[5]
+            pol_Mx = pol_Mr * np.cos(pol_Mtheta)
+            pol_My = pol_Mr * np.sin(pol_Mtheta)
 
-            # Create figure
             fig, ax = plt.subplots(figsize=(10, 9))
 
-            # Plot magnitude as heatmap
-            extent = [-config.AOI_CONFIG['x_dim']/2, config.AOI_CONFIG['x_dim']/2,
-                      -config.AOI_CONFIG['y_dim']/2, config.AOI_CONFIG['y_dim']/2]
+            extent = [-config.AOI_CONFIG['x_dim'] / 2, config.AOI_CONFIG['x_dim'] / 2,
+                      -config.AOI_CONFIG['y_dim'] / 2, config.AOI_CONFIG['y_dim'] / 2]
+
             im = ax.imshow(H_magnitude, extent=extent, origin='lower', cmap='viridis', alpha=0.8)
 
-            # Plot vector field (downsampled)
+            grid_size = H_field.shape[0]
             skip = max(1, grid_size // 20)
-            x = np.linspace(-config.AOI_CONFIG['x_dim']/2, config.AOI_CONFIG['x_dim']/2, grid_size)
-            y = np.linspace(-config.AOI_CONFIG['y_dim']/2, config.AOI_CONFIG['y_dim']/2, grid_size)
+
+            x = np.linspace(extent[0], extent[1], grid_size)
+            y = np.linspace(extent[2], extent[3], grid_size)
             X, Y = np.meshgrid(x, y)
 
             ax.quiver(X[::skip, ::skip], Y[::skip, ::skip],
-                     Hx[::skip, ::skip], Hy[::skip, ::skip],
-                     color='white', alpha=0.6, scale=np.max(H_magnitude)*20 if np.max(H_magnitude) > 0 else 1)
+                      Hx[::skip, ::skip], Hy[::skip, ::skip],
+                      color='white', alpha=0.6,
+                      scale=np.max(H_magnitude) * 20 if np.max(H_magnitude) > 0 else 1)
 
-            # Plot magnet as rectangle
-            ax.add_patch(Rectangle((pos_x - dim_a/2, pos_y - dim_b/2),
+            ax.add_patch(Rectangle((pos_x - dim_a / 2, pos_y - dim_b / 2),
                                    dim_a, dim_b,
                                    fill=False, edgecolor='red', linewidth=3))
 
-            # Plot magnetization vector (scaled for visibility)
             arrow_scale = min(dim_a, dim_b) * 0.5
-            ax.arrow(pos_x, pos_y, pol_Mx*arrow_scale, pol_My*arrow_scale,
-                    head_width=1, head_length=1, fc='red', ec='red', linewidth=3)
+            ax.arrow(pos_x, pos_y, pol_Mx * arrow_scale, pol_My * arrow_scale,
+                     head_width=1, head_length=1, fc='red', ec='red', linewidth=3)
 
-            ax.set_title(f'Magnetic Field Distribution (Sample {idx+1})', fontsize=14, fontweight='bold')
+            ax.set_title(f'Magnetic Field Distribution (Sample {idx + 1})', fontsize=14, fontweight='bold')
             ax.set_xlabel('x (m)', fontsize=12)
             ax.set_ylabel('y (m)', fontsize=12)
 
             cbar = plt.colorbar(im, ax=ax, label='|H| (A/m)')
             cbar.ax.tick_params(labelsize=10)
 
-            # Add info text
             info_text = (f'Magnet Position: ({pos_x:.2f}, {pos_y:.2f}) m\n'
-                        f'Dimensions: ({dim_a:.2f}, {dim_b:.2f}) m\n'
-                        f'Polarization: ({pol_Mx:.3f}, {pol_My:.3f}) T\n'
-                        f'Max |H|: {np.max(H_magnitude):.2f} A/m\n'
-                        f'Mean |H|: {np.mean(H_magnitude):.2f} A/m')
+                         f'Dimensions: ({dim_a:.2f}, {dim_b:.2f}) m\n'
+                         f'Polarization: ({pol_Mx:.3f}, {pol_My:.3f}) T\n'
+                         f'Max |H|: {np.max(H_magnitude):.2f} A/m\n'
+                         f'Mean |H|: {np.mean(H_magnitude):.2f} A/m')
+
             ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
-                   fontsize=10, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                    fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
             plt.tight_layout()
             plt.show()
-
-        print(f"Visualized {num_samples} sample(s) from {split} split")
 
     def load_training_data(self, filename='generated_data.npz'):
         data = np.load(filename)
@@ -177,17 +138,6 @@ class Dataset:
         # ---generate magpy magnet collection---
         sampler = qmc.LatinHypercube(d=6)
         samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
-
-        x_samples = qmc.scale(samples[:, 0:1], -config.AOI_CONFIG['x_dim'],
-                              config.AOI_CONFIG['x_dim']).flatten()  # twice AOI size
-        y_samples = qmc.scale(samples[:, 1:2], -config.AOI_CONFIG['y_dim'],
-                              config.AOI_CONFIG['y_dim']).flatten()  # twice AOI size
-        a_samples = qmc.scale(samples[:, 2:3], config.MAGNET_CONFIG['dim_min'],
-                              config.MAGNET_CONFIG['dim_max']).flatten()
-        b_samples = qmc.scale(samples[:, 3:4], config.MAGNET_CONFIG['dim_min'],
-                              config.MAGNET_CONFIG['dim_max']).flatten()
-        Mx_samples = qmc.scale(samples[:, 4:5], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
-        My_samples = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
 
         #slice arrays
         x = qmc.scale(samples[:, 0:1], -config.AOI_CONFIG['x_dim'], config.AOI_CONFIG['x_dim']).flatten()
@@ -224,10 +174,19 @@ class Dataset:
                     ]
 
                     H_batch = magpy.getH(magnets, self.points)
-                    H_batch = H_batch[:, :, :2].astype(np.float32)
+                    H_batch = H_batch[..., :2].astype(np.float32)
+                    H_batch = tf.reshape(H_batch,
+                                         [current_batch_size,
+                        int(config.AOI_CONFIG['x_dim'] / config.AOI_CONFIG['resolution']) + 1,
+                        int(config.AOI_CONFIG['y_dim'] / config.AOI_CONFIG['resolution']) + 1,
+                        2
+                    ])
+                    H_batch = tf.transpose(H_batch, perm=[0, 1, 2, 3]) #transpose to [batch, x, y, component]
+                    #H_batch = tf.image.resize(H_batch, [224, 224], method='bilinear') #resize x, y only
 
                     for k in range(current_batch_size):
-                        yield all_params[i + k], H_batch[k]
+                        # H_batch[k] is now [224, 224, 2]
+                        yield H_batch[k], all_params[i + k]
                     pbar.update(1)
 
         train_size = int(config.DATASET_CONFIG['dataset_size'] * config.DATASET_CONFIG['train_split'])
@@ -238,8 +197,8 @@ class Dataset:
         idx_test_end = config.DATASET_CONFIG['dataset_size']
 
         output_sig = (
-            tf.TensorSpec(shape=(6,), dtype=tf.float32),
-            tf.TensorSpec(shape=(90601, 2), dtype=tf.float32)
+            tf.TensorSpec(shape=(301, 301, 2), dtype=tf.float32),
+            tf.TensorSpec(shape=(6,), dtype=tf.float32)
         )
 
         train_ds = tf.data.Dataset.from_generator(
