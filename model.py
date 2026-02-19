@@ -30,7 +30,119 @@ def create_model(input_shape=config.MODEL_CONFIG['input_shape'], output_dim=conf
     print("ResNet50 model created")
     return model
 
-def custom_loss(params_true, params_pred):
+#cartesian magnetisation
+def custom_loss_cart(params_true, params_pred):
+    """
+    MOSTLY VIBE CODED
+
+    hybrid loss: linear combination of H field MSE and parameter MSE
+    (sigmoid activation --> dimensions always +ve --> no need for negative dimension penalty)
+    """
+
+    #---data prep---
+    observation_points = tf.constant(Dataset.points, dtype=tf.float32)
+    batch_size = tf.shape(params_pred)[0]
+    n_points = tf.shape(observation_points)[0]
+
+    #denormalise
+    params_true_denorm = tf.stack([
+        params_true[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],  # x: 0-1 -> -30 to 30
+        params_true[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],  # y: 0-1 -> -30 to 30
+        params_true[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # a
+        params_true[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # b
+        params_true[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # Mx
+        params_true[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # My
+    ], axis=1)
+
+    params_pred_denorm = tf.stack([
+        params_pred[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],
+        params_pred[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],
+        params_pred[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
+        params_pred[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
+        params_pred[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
+        params_pred[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
+    ], axis=1)
+
+    #---calculate true H field---
+    positions_true = tf.stack([
+        params_true_denorm[:, 0],
+        params_true_denorm[:, 1],
+        tf.fill([batch_size], 2.5)
+    ], axis=1)
+
+    dimensions_true = tf.stack([
+        params_true_denorm[:, 2],
+        params_true_denorm[:, 3],
+        tf.ones([batch_size])
+    ], axis=1)
+
+    polarizations_true = tf.stack([
+        params_true_denorm[:, 4],
+        params_true_denorm[:, 5],
+        tf.zeros([batch_size])
+    ], axis=1)
+
+    #all obseration points
+    obs_expanded = tf.tile(tf.expand_dims(observation_points, 0), [batch_size, 1, 1])
+    positions_true_rep = tf.repeat(positions_true, n_points, axis=0)
+    dimensions_true_rep = tf.repeat(dimensions_true, n_points, axis=0)
+    polarizations_true_rep = tf.repeat(polarizations_true, n_points, axis=0)
+    obs_flat = tf.reshape(obs_expanded, [-1, 3])
+
+    #compute H true
+    observers_rel_true = obs_flat - positions_true_rep
+    H_true = magnet_field_tf.compute_H_field_batch(observers_rel_true, dimensions_true_rep, polarizations_true_rep)
+    H_true = tf.reshape(H_true, [batch_size, n_points, 3])
+
+    #normalise, clip
+    H_true_normalized = H_true / Dataset.H_STD
+    H_true_normalized = tf.clip_by_value(H_true_normalized, -100.0, 100.0)
+
+    #---calculate predicted H field---
+    positions_pred = tf.stack([
+        params_pred_denorm[:, 0],
+        params_pred_denorm[:, 1],
+        tf.fill([batch_size], 2.5)
+    ], axis=1)
+
+    dimensions_pred = tf.stack([
+        params_pred_denorm[:, 2],
+        params_pred_denorm[:, 3],
+        tf.ones([batch_size])
+    ], axis=1)
+
+    polarizations_pred = tf.stack([
+        params_pred_denorm[:, 4],
+        params_pred_denorm[:, 5],
+        tf.zeros([batch_size])
+    ], axis=1)
+
+    positions_pred_rep = tf.repeat(positions_pred, n_points, axis=0)
+    dimensions_pred_rep = tf.repeat(dimensions_pred, n_points, axis=0)
+    polarizations_pred_rep = tf.repeat(polarizations_pred, n_points, axis=0)
+
+    #calc H pred
+    observers_rel_pred = obs_flat - positions_pred_rep
+    H_pred = magnet_field_tf.compute_H_field_batch(observers_rel_pred, dimensions_pred_rep, polarizations_pred_rep)
+    H_pred = tf.reshape(H_pred, [batch_size, n_points, 3])
+
+    #normalise, clip
+    H_pred_normalized = H_pred / Dataset.H_STD
+    H_pred_normalized = tf.clip_by_value(H_pred_normalized, -100.0, 100.0)
+
+    #---compute losses---
+    #physics loss: MSE between H_true_normalized and H_pred_normalized
+    physics_loss_per_sample = tf.reduce_mean(tf.square(H_true_normalized - H_pred_normalized), axis=[1, 2])
+    physics_loss = tf.reduce_mean(physics_loss_per_sample)
+
+    #parameter loss: MSE between (normalised) parameters
+    param_mse = tf.reduce_mean(tf.square(params_true - params_pred))
+
+    #combine for total loss
+    #ratio chosen so physics and param losses contribute roughly equally
+    total_loss = 0.05 * physics_loss + param_mse
+
+    return total_lossdef custom_loss_cart(params_true, params_pred):
     """
     MOSTLY VIBE CODED
 
@@ -143,6 +255,247 @@ def custom_loss(params_true, params_pred):
 
     return total_loss
 
+#polar coords magnetisation
+def custom_loss_polar(params_true, params_pred):
+    """
+    MOSTLY VIBE CODED
+
+    hybrid loss: linear combination of H field MSE and parameter MSE
+    (sigmoid activation --> dimensions always +ve --> no need for negative dimension penalty)
+    
+    differences to custom_loss_cart: 
+    - params MSE calculated using magnetisation in polar coord
+    - params first converted to cartesian for H field MSE calculation 
+    """
+
+    #---polar->cartesian coordinates for magnetisation---
+    params_true_polar = params_true
+    params_pred_polar = params_pred
+
+
+    params_true = [params_true[0], params_true[1], params_true[2], params_true[3],
+                   np.sqrt(params_true[4]**2 + params_true[5]**2),
+                   np.arctan2(params_true[5], params_true[4])]
+    params_pred = [params_pred[0], params_pred[1], params_pred[2], params_pred[3],
+                   np.sqrt(params_pred[4]**2 + params_pred[5]**2),
+                   np.arctan2(params_pred[5], params_pred[4])]
+
+    #---data prep---
+    observation_points = tf.constant(Dataset.points, dtype=tf.float32)
+    batch_size = tf.shape(params_pred)[0]
+    n_points = tf.shape(observation_points)[0]
+
+    #denormalise
+    params_true_denorm = tf.stack([
+        params_true[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],  # x: 0-1 -> -30 to 30
+        params_true[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],  # y: 0-1 -> -30 to 30
+        params_true[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # a
+        params_true[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # b
+        params_true[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # Mx
+        params_true[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # My
+    ], axis=1)
+
+    params_pred_denorm = tf.stack([
+        params_pred[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],
+        params_pred[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],
+        params_pred[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
+        params_pred[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
+        params_pred[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
+        params_pred[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
+    ], axis=1)
+
+    #---calculate true H field---
+    positions_true = tf.stack([
+        params_true_denorm[:, 0],
+        params_true_denorm[:, 1],
+        tf.fill([batch_size], 2.5)
+    ], axis=1)
+
+    dimensions_true = tf.stack([
+        params_true_denorm[:, 2],
+        params_true_denorm[:, 3],
+        tf.ones([batch_size])
+    ], axis=1)
+
+    polarizations_true = tf.stack([
+        params_true_denorm[:, 4],
+        params_true_denorm[:, 5],
+        tf.zeros([batch_size])
+    ], axis=1)
+
+    #all obseration points
+    obs_expanded = tf.tile(tf.expand_dims(observation_points, 0), [batch_size, 1, 1])
+    positions_true_rep = tf.repeat(positions_true, n_points, axis=0)
+    dimensions_true_rep = tf.repeat(dimensions_true, n_points, axis=0)
+    polarizations_true_rep = tf.repeat(polarizations_true, n_points, axis=0)
+    obs_flat = tf.reshape(obs_expanded, [-1, 3])
+
+    #compute H true
+    observers_rel_true = obs_flat - positions_true_rep
+    H_true = magnet_field_tf.compute_H_field_batch(observers_rel_true, dimensions_true_rep, polarizations_true_rep)
+    H_true = tf.reshape(H_true, [batch_size, n_points, 3])
+
+    #normalise, clip
+    H_true_normalized = H_true / Dataset.H_STD
+    H_true_normalized = tf.clip_by_value(H_true_normalized, -100.0, 100.0)
+
+    #---calculate predicted H field---
+    positions_pred = tf.stack([
+        params_pred_denorm[:, 0],
+        params_pred_denorm[:, 1],
+        tf.fill([batch_size], 2.5)
+    ], axis=1)
+
+    dimensions_pred = tf.stack([
+        params_pred_denorm[:, 2],
+        params_pred_denorm[:, 3],
+        tf.ones([batch_size])
+    ], axis=1)
+
+    polarizations_pred = tf.stack([
+        params_pred_denorm[:, 4],
+        params_pred_denorm[:, 5],
+        tf.zeros([batch_size])
+    ], axis=1)
+
+    positions_pred_rep = tf.repeat(positions_pred, n_points, axis=0)
+    dimensions_pred_rep = tf.repeat(dimensions_pred, n_points, axis=0)
+    polarizations_pred_rep = tf.repeat(polarizations_pred, n_points, axis=0)
+
+    #calc H pred
+    observers_rel_pred = obs_flat - positions_pred_rep
+    H_pred = magnet_field_tf.compute_H_field_batch(observers_rel_pred, dimensions_pred_rep, polarizations_pred_rep)
+    H_pred = tf.reshape(H_pred, [batch_size, n_points, 3])
+
+    #normalise, clip
+    H_pred_normalized = H_pred / Dataset.H_STD
+    H_pred_normalized = tf.clip_by_value(H_pred_normalized, -100.0, 100.0)
+
+    #---compute losses---
+    #physics loss: MSE between H_true_normalized and H_pred_normalized
+    physics_loss_per_sample = tf.reduce_mean(tf.square(H_true_normalized - H_pred_normalized), axis=[1, 2])
+    physics_loss = tf.reduce_mean(physics_loss_per_sample)
+
+    #parameter loss: MSE between (normalised) parameters
+    param_mse = tf.reduce_mean(tf.square(params_true - params_pred))
+
+    #combine for total loss
+    #ratio chosen so physics and param losses contribute roughly equally
+    total_loss = 0.05 * physics_loss + param_mse
+
+    return total_lossdef custom_loss_cart(params_true, params_pred):
+    """
+    MOSTLY VIBE CODED
+
+    hybrid loss: linear combination of H field MSE and parameter MSE
+    (sigmoid activation --> dimensions always +ve --> no need for negative dimension penalty)
+    """
+
+    #---data prep---
+    observation_points = tf.constant(Dataset.points, dtype=tf.float32)
+    batch_size = tf.shape(params_pred)[0]
+    n_points = tf.shape(observation_points)[0]
+
+    #denormalise
+    params_true_denorm = tf.stack([
+        params_true[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],  # x: 0-1 -> -30 to 30
+        params_true[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],  # y: 0-1 -> -30 to 30
+        params_true[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # a
+        params_true[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # b
+        params_true[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # Mx
+        params_true[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # My
+    ], axis=1)
+
+    params_pred_denorm = tf.stack([
+        params_pred[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],
+        params_pred[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],
+        params_pred[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
+        params_pred[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
+        params_pred[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
+        params_pred[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
+    ], axis=1)
+
+    #---calculate true H field---
+    positions_true = tf.stack([
+        params_true_denorm[:, 0],
+        params_true_denorm[:, 1],
+        tf.fill([batch_size], 2.5)
+    ], axis=1)
+
+    dimensions_true = tf.stack([
+        params_true_denorm[:, 2],
+        params_true_denorm[:, 3],
+        tf.ones([batch_size])
+    ], axis=1)
+
+    polarizations_true = tf.stack([
+        params_true_denorm[:, 4],
+        params_true_denorm[:, 5],
+        tf.zeros([batch_size])
+    ], axis=1)
+
+    #all obseration points
+    obs_expanded = tf.tile(tf.expand_dims(observation_points, 0), [batch_size, 1, 1])
+    positions_true_rep = tf.repeat(positions_true, n_points, axis=0)
+    dimensions_true_rep = tf.repeat(dimensions_true, n_points, axis=0)
+    polarizations_true_rep = tf.repeat(polarizations_true, n_points, axis=0)
+    obs_flat = tf.reshape(obs_expanded, [-1, 3])
+
+    #compute H true
+    observers_rel_true = obs_flat - positions_true_rep
+    H_true = magnet_field_tf.compute_H_field_batch(observers_rel_true, dimensions_true_rep, polarizations_true_rep)
+    H_true = tf.reshape(H_true, [batch_size, n_points, 3])
+
+    #normalise, clip
+    H_true_normalized = H_true / Dataset.H_STD
+    H_true_normalized = tf.clip_by_value(H_true_normalized, -100.0, 100.0)
+
+    #---calculate predicted H field---
+    positions_pred = tf.stack([
+        params_pred_denorm[:, 0],
+        params_pred_denorm[:, 1],
+        tf.fill([batch_size], 2.5)
+    ], axis=1)
+
+    dimensions_pred = tf.stack([
+        params_pred_denorm[:, 2],
+        params_pred_denorm[:, 3],
+        tf.ones([batch_size])
+    ], axis=1)
+
+    polarizations_pred = tf.stack([
+        params_pred_denorm[:, 4],
+        params_pred_denorm[:, 5],
+        tf.zeros([batch_size])
+    ], axis=1)
+
+    positions_pred_rep = tf.repeat(positions_pred, n_points, axis=0)
+    dimensions_pred_rep = tf.repeat(dimensions_pred, n_points, axis=0)
+    polarizations_pred_rep = tf.repeat(polarizations_pred, n_points, axis=0)
+
+    #calc H pred
+    observers_rel_pred = obs_flat - positions_pred_rep
+    H_pred = magnet_field_tf.compute_H_field_batch(observers_rel_pred, dimensions_pred_rep, polarizations_pred_rep)
+    H_pred = tf.reshape(H_pred, [batch_size, n_points, 3])
+
+    #normalise, clip
+    H_pred_normalized = H_pred / Dataset.H_STD
+    H_pred_normalized = tf.clip_by_value(H_pred_normalized, -100.0, 100.0)
+
+    #---compute losses---
+    #physics loss: MSE between H_true_normalized and H_pred_normalized
+    physics_loss_per_sample = tf.reduce_mean(tf.square(H_true_normalized - H_pred_normalized), axis=[1, 2])
+    physics_loss = tf.reduce_mean(physics_loss_per_sample)
+
+    #parameter loss: MSE between (normalised) parameters
+    param_mse = tf.reduce_mean(tf.square(params_true_polar - params_pred_polar))
+
+    #combine for total loss
+    #ratio chosen so physics and param losses contribute roughly equally
+    total_loss = 0.05 * physics_loss + param_mse
+
+    return total_loss
+
 def compile_model(model, initial_lr):
     optimizer = optimizers.Adam(
         learning_rate=initial_lr,
@@ -151,8 +504,8 @@ def compile_model(model, initial_lr):
 
     model.compile(
         optimizer=optimizer,
-        loss=custom_loss,
-        metrics=[custom_loss] #config.TRAINING_CONFIG['loss_metric'],
+        loss=custom_loss_polar,
+        metrics=[custom_loss_polar] #config.TRAINING_CONFIG['loss_metric'],
     )
 
     return model
