@@ -39,7 +39,7 @@ generator = data.Dataset()
 generator.local_path = './data/12-02-26'
 generator.generate_cuboid_data_TF_dataset()
 
-
+'''
 #---load datasets---
 print('---Loading datasets---')
 train_ds = tf.data.Dataset.load("./data/12-02-26/train_ds")
@@ -57,3 +57,4 @@ history = Model.train_model(model, train_dataset, val_dataset, initial_lr=config
 print('Complete\n\n')
 
 print("Script complete")
+'''
