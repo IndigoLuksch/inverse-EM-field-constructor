@@ -18,7 +18,7 @@ NOTES
 
 DATASET_CONFIG = {
     'bucket_name': 'inverse-em-2', #gcloud - new account
-    'dataset_size': 60, #change to 60 000
+    'dataset_size': 6000, #change to 60 000
     'train_split': 0.6,
     'val_split': 0.3,
     'test_split': 0.1,
