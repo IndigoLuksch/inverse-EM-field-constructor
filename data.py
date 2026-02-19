@@ -6,7 +6,7 @@ import random
 from scipy.stats import qmc
 from sklearn.model_selection import train_test_split
 import os
-from google.cloud import storage
+#from google.cloud import storage
 import time
 import math
 import matplotlib.pyplot as plt
@@ -29,7 +29,7 @@ class Dataset:
         self.points = None
 
         #---file paths---
-        self.local_path = 'data/tfrecords'
+        self.local_path = './data/default_folder'
         self.gcs_blob_path = 'tfrecords'
         self.gcs_bucket_name = 'inverse-em-2'
         self.bucket = None
@@ -170,8 +170,10 @@ class Dataset:
         self.points = data['points']
         print("Data loaded")
 
-    #generate data as tf.dataset and save locally
     def generate_cuboid_data_TF_dataset(self):
+        """
+        generate data as tf.dataset and save locally
+        """
         # ---generate magpy magnet collection---
         sampler = qmc.LatinHypercube(d=6)
         samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
@@ -187,22 +189,106 @@ class Dataset:
         Mx_samples = qmc.scale(samples[:, 4:5], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
         My_samples = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
 
-        # ---save metadata---
-        #np.savez(f'{self.local_path}/metadata.npz', magnets=magnets, points=points)
+        #slice arrays
+        x = qmc.scale(samples[:, 0:1], -config.AOI_CONFIG['x_dim'], config.AOI_CONFIG['x_dim']).flatten()
+        y = qmc.scale(samples[:, 1:2], -config.AOI_CONFIG['y_dim'], config.AOI_CONFIG['y_dim']).flatten()
+        a = qmc.scale(samples[:, 2:3], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
+        b = qmc.scale(samples[:, 3:4], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
+        Mx = qmc.scale(samples[:, 4:5], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
+        My = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
 
-        name = ['train', 'val', 'test'][i]
-        filename = f'{name}-{batch_idx:04d}.tfrecord'
-        local_fullpath = f'{self.local_path}/{filename}'
-        os.makedirs(os.path.dirname(local_fullpath), exist_ok=True)
+        #magnetisation: cartesian --> polar
+        Mr = np.sqrt(Mx ** 2 + My ** 2)
+        Mtheta = np.arctan2(My, Mx)
 
-        magnet = magpy.magnet.Cuboid(polarization=(Mx_samples[j], My_samples[j], 0),
-                                     dimension=(a_samples[j], b_samples[j], 1),
-                                     position=(x_samples[j], y_samples[j], 2.5))
-        H_single = magpy.getH(magnet, self.points)[:, :2].astype(np.float32)
-        params = np.array([x_samples[j], y_samples[j],
-                           a_samples[j], b_samples[j],
-                           Mx_samples[j], My_samples[j]
-                           ], dtype=np.float32)
+        # Stack parameters: (N, 6)
+        all_params = np.stack([x, y, a, b, Mr, Mtheta], axis=1).astype(np.float32)
+
+        #---generator function for TF dataset---
+        def generate_cuboid_data_TF_dataset(self):
+            """
+            generate data as tf.dataset and save locally
+            """
+            # ---generate magpy magnet collection---
+            sampler = qmc.LatinHypercube(d=6)
+            samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])
+
+            x_samples = qmc.scale(samples[:, 0:1], -config.AOI_CONFIG['x_dim'],
+                                  config.AOI_CONFIG['x_dim']).flatten()  # twice AOI size
+            y_samples = qmc.scale(samples[:, 1:2], -config.AOI_CONFIG['y_dim'],
+                                  config.AOI_CONFIG['y_dim']).flatten()  # twice AOI size
+            a_samples = qmc.scale(samples[:, 2:3], config.MAGNET_CONFIG['dim_min'],
+                                  config.MAGNET_CONFIG['dim_max']).flatten()
+            b_samples = qmc.scale(samples[:, 3:4], config.MAGNET_CONFIG['dim_min'],
+                                  config.MAGNET_CONFIG['dim_max']).flatten()
+            Mx_samples = qmc.scale(samples[:, 4:5], config.MAGNET_CONFIG['M_min'],
+                                   config.MAGNET_CONFIG['M_max']).flatten()
+            My_samples = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'],
+                                   config.MAGNET_CONFIG['M_max']).flatten()
+
+            # slice arrays
+            x = qmc.scale(samples[:, 0:1], -config.AOI_CONFIG['x_dim'], config.AOI_CONFIG['x_dim']).flatten()
+            y = qmc.scale(samples[:, 1:2], -config.AOI_CONFIG['y_dim'], config.AOI_CONFIG['y_dim']).flatten()
+            a = qmc.scale(samples[:, 2:3], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
+            b = qmc.scale(samples[:, 3:4], config.MAGNET_CONFIG['dim_min'], config.MAGNET_CONFIG['dim_max']).flatten()
+            Mx = qmc.scale(samples[:, 4:5], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
+            My = qmc.scale(samples[:, 5:6], config.MAGNET_CONFIG['M_min'], config.MAGNET_CONFIG['M_max']).flatten()
+
+            # magnetisation: cartesian --> polar
+            Mr = np.sqrt(Mx ** 2 + My ** 2)
+            Mtheta = np.arctan2(My, Mx)
+
+            # Stack parameters: (N, 6)
+            all_params = np.stack([x, y, a, b, Mr, Mtheta], axis=1).astype(np.float32)
+
+            #---generator function for TF dataset---
+            def gen_dataset_split(start_idx, end_idx, batch_size=100):
+                def data_generator():
+                    total_items = end_idx - start_idx
+                    total_batches = int(np.ceil(total_items / batch_size))
+
+                    with tqdm(total=total_batches, desc=f"Generating {start_idx}-{end_idx}", unit="batch") as pbar:
+                        for i in range(start_idx, end_idx, batch_size):
+                            batch_end = min(i + batch_size, end_idx)
+                            current_batch_size = batch_end - i
+
+                            #create magnet batch of size batch_size
+                            magnets = [
+                                magpy.magnet.Cuboid(
+                                    polarization=(Mx[j], My[j], 0),
+                                    dimension=(a[j], b[j], 1),
+                                    position=(x[j], y[j], 2.5)
+                                ) for j in range(i, batch_end)
+                            ]
+
+                            H_batch = magpy.getH(magnets, self.points)
+                            H_batch = H_batch[:, :, :2].astype(np.float32)
+
+                            for k in range(current_batch_size):
+                                yield all_params[i + k], H_batch[k]
+                            pbar.update(1)
+
+                return tf.data.Dataset.from_generator(
+                    data_generator,
+                    output_signature=(
+                        tf.TensorSpec(shape=(6,), dtype=tf.float32),
+                        tf.TensorSpec(shape=(90601, 2), dtype=tf.float32)
+                    )
+                )
+
+            #---generate datasets---
+            dataset_size = config.DATASET_CONFIG['dataset_size']
+            train_size = int(dataset_size * config.DATASET_CONFIG['train_split'])
+            val_size = int(dataset_size * config.DATASET_CONFIG['val_split'])
+
+            train_ds = gen_dataset_split(0, train_size)
+            val_ds = gen_dataset_split(train_size, train_size + val_size)
+            test_ds = gen_dataset_split(train_size + val_size, dataset_size)
+
+            tf.data.Dataset.save(train_ds, self.local_path + "/train_ds")
+            tf.data.Dataset.save(val_ds, self.local_path + "/val_ds")
+            tf.data.Dataset.save(test_ds, self.local_path + "/test_ds")
+
 
     #--------------------------------------
     #---BELOW FUNCTIONS NO LONGER IN USE---
@@ -264,8 +350,10 @@ class Dataset:
 
         return H, params
 
-    #generate data as TFRecord and upload to gcloud (this is OVERKILL for the ~80GB dataset I'm using)
     def generate_cuboid_data_TFRECORD(self, use_gcs=False, num_batches=1000):
+        """
+        generate data as TFRecord and upload to gcloud (this is OVERKILL for the ~80GB dataset I'm using)
+        """
         #---generate magpy magnet collection---
         sampler = qmc.LatinHypercube(d=6)
         samples = sampler.random(n=config.DATASET_CONFIG['dataset_size'])

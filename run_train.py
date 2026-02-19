@@ -14,9 +14,8 @@ print("Available devices:")
 for device in tf.config.list_physical_devices():
     print(f"  {device}")
 
-'''
-VIBE 
-'''
+#-----------
+#---VIBE----
 # Get GPU devices
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
@@ -31,25 +30,20 @@ if gpus:
 else:
     print("⚠ No GPU found - running on CPU")
 print('Complete\n')
-'''
-END VIBE 
-'''
+#---END VIBE---
+#--------------
 
 #---generate data and save to gcloud---
-'''
 print('Generating data')
 generator = data.Dataset()
-generator.setup_gcloud()
-generator.generate_cubiod_data()
-'''
+generator.local_path = './data/12-02-26'
+generator.generate_cuboid_data_TF_dataset()
+
 
 #---load datasets---
 print('---Loading datasets---')
-prop_to_load = 1.0 #proportion of datasets to load
-dataset_loader = data.Dataset()
-
-train_dataset = dataset_loader.load_split_datasets(split='train', prop_to_load=prop_to_load)
-val_dataset = dataset_loader.load_split_datasets(split='val', prop_to_load=prop_to_load)
+train_ds = tf.data.Dataset.load("./data/12-02-26/train_ds")
+val_ds = tf.data.Dataset.load("./data/12-02-26/val_ds")
 print('Complete\n\n')
 
 #---create and train model---
