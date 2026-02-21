@@ -53,6 +53,8 @@ class Dataset:
         self.H_STD = 1000
 
     def visualise_random_sample(self, split='train', num_samples=1):
+        '''visualises a random sample from the dataset at local_path
+        uses polar coords for M'''
         dataset_path = f"{self.local_path}/{split}_ds"
 
         try:

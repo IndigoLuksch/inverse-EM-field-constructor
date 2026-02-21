@@ -42,13 +42,18 @@ if mode == "data_gen":
     generator.local_path = './data/12-02-26'
     generator.generate_cuboid_data_TF_dataset()
 
-    generator.visualise_random_sample(num_samples=3)
+    generator.visualise_random_sample(num_samples=1  )
 
 if mode == 'train':
     #---load datasets---
     print('---Loading datasets---')
-    train_ds = tf.data.Dataset.load(generator.local_path)
-    val_ds = tf.data.Dataset.load(generator.local_path)
+    generator = data.Dataset()
+    train_ds = tf.data.Dataset.load(generator.local_path + "/train_ds")
+    val_ds = tf.data.Dataset.load(generator.local_path + "/val_ds")
+
+    train_ds = train_ds.batch(config.TRAINING_CONFIG["batch_size"]).prefetch(tf.data.AUTOTUNE)
+    val_ds = val_ds.batch(config.TRAINING_CONFIG["batch_size"]).prefetch(tf.data.AUTOTUNE)
+
     print('Complete\n\n')
 
     #---create and train model---

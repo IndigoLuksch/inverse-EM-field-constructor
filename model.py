@@ -162,12 +162,12 @@ def custom_loss_polar(params_true, params_pred):
     params_pred_polar = params_pred
 
 
-    params_true = [params_true[0], params_true[1], params_true[2], params_true[3],
-                   np.sqrt(params_true[4]**2 + params_true[5]**2),
-                   np.arctan2(params_true[5], params_true[4])]
-    params_pred = [params_pred[0], params_pred[1], params_pred[2], params_pred[3],
-                   np.sqrt(params_pred[4]**2 + params_pred[5]**2),
-                   np.arctan2(params_pred[5], params_pred[4])]
+    params_true = tf.stack([params_true[0], params_true[1], params_true[2], params_true[3],
+                   tf.sqrt(tf.square(params_true[4]) + tf.square(params_true[5])),
+                   tf.math.atan2(params_true[5], params_true[4])])
+    params_pred = tf.stack([params_pred[0], params_pred[1], params_pred[2], params_pred[3],
+                   tf.sqrt(tf.square(params_pred[4]) + tf.square(params_pred[5])),
+                   tf.atan2(params_pred[5], params_pred[4])])
 
     #---data prep---
     observation_points = tf.constant(Dataset.points, dtype=tf.float32)
@@ -275,7 +275,7 @@ def custom_loss_polar(params_true, params_pred):
     return total_loss
 
 def compile_model(model, initial_lr):
-    optimizer = optimizers.Adam(
+    optimizer = optimizers.legacy.Adam(
         learning_rate=initial_lr,
         clipnorm=1.0  #clip gradients to stabilise
     )
@@ -315,7 +315,7 @@ def create_callbacks():
 def train_model(model, train_dataset, val_dataset, initial_lr=0.1, prop_to_load=1.0):
     #calc steps for terminal progress bar display, adjusted for actual data loaded
     steps_per_epoch = int(config.DATASET_CONFIG['dataset_size'] * config.DATASET_CONFIG['train_split'] * prop_to_load) // \
-                      config.TRAINING_CONFIG['batch_size']
+                       config.TRAINING_CONFIG['batch_size']
     validation_steps = int(config.DATASET_CONFIG['dataset_size'] * config.DATASET_CONFIG['val_split'] * prop_to_load) // \
                        config.TRAINING_CONFIG['batch_size']
 
@@ -327,9 +327,9 @@ def train_model(model, train_dataset, val_dataset, initial_lr=0.1, prop_to_load=
 
     #train :)
     history = model.fit(
-        train_dataset,
+        train_dataset.repeat(),
         epochs=config.TRAINING_CONFIG['epochs'],
-        validation_data=val_dataset,
+        validation_data=val_dataset.repeat(),
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
         callbacks=callback_list,
