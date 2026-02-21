@@ -56,7 +56,7 @@ MODEL_CONFIG = {
 TRAINING_CONFIG = {
     'batch_size': 60,
     'epochs': 150,
-    'initial_lr': 3e-3,
+    'initial_lr': 8e-4,
     #'lr_decay_factor': 0.1,
     #'lr_decay_epochs': [30, 60],  #decay lr at these epochs
     'momentum': 0.9,

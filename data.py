@@ -199,7 +199,7 @@ class Dataset:
         idx_test_end = config.DATASET_CONFIG['dataset_size']
 
         output_sig = (
-            tf.TensorSpec(shape=(301, 301, 2), dtype=tf.float32),
+            tf.TensorSpec(shape=(config.MODEL_CONFIG["input_shape"]), dtype=tf.float32),
             tf.TensorSpec(shape=(6,), dtype=tf.float32)
         )
 

@@ -162,12 +162,20 @@ def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
     params_pred_polar = params_pred
 
 
-    params_true = tf.stack([params_true[0], params_true[1], params_true[2], params_true[3],
-                   tf.sqrt(tf.square(params_true[4]) + tf.square(params_true[5]) + epsilon),
-                   tf.math.atan2(params_true[5] + epsilon, params_true[4] + epsilon)])
-    params_pred = tf.stack([params_pred[0], params_pred[1], params_pred[2], params_pred[3],
-                   tf.sqrt(tf.square(params_pred[4]) + tf.square(params_pred[5] + epsilon)),
-                   tf.atan2(params_pred[5] + epsilon, params_pred[4] + epsilon)])
+    params_true = tf.stack([params_true[:, 0],
+                            params_true[:, 1],
+                            params_true[:, 2],
+                            params_true[:, 3],
+                            params_true[:, 4]*tf.cos(params_true[:, 5]),
+                            params_true[:, 4]*tf.sin(params_true[:, 5])
+                            ], axis=1)
+    params_pred = tf.stack([params_pred[:,0],
+                            params_pred[:,1],
+                            params_pred[:,2],
+                            params_pred[:,3],
+                            params_pred[:, 4] * tf.cos(params_pred[:, 5]),
+                            params_pred[:, 4] * tf.sin(params_pred[:, 5])
+                            ], axis=1)
 
     #---data prep---
     observation_points = tf.constant(Dataset.points, dtype=tf.float32)
