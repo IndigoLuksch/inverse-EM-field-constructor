@@ -145,7 +145,7 @@ def custom_loss_cart(params_true, params_pred):
     return total_loss
 
 #polar coords magnetisation
-def custom_loss_polar(params_true, params_pred):
+def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
     """
     MOSTLY VIBE CODED
 
@@ -163,11 +163,11 @@ def custom_loss_polar(params_true, params_pred):
 
 
     params_true = tf.stack([params_true[0], params_true[1], params_true[2], params_true[3],
-                   tf.sqrt(tf.square(params_true[4]) + tf.square(params_true[5])),
-                   tf.math.atan2(params_true[5], params_true[4])])
+                   tf.sqrt(tf.square(params_true[4]) + tf.square(params_true[5]) + epsilon),
+                   tf.math.atan2(params_true[5] + epsilon, params_true[4] + epsilon)])
     params_pred = tf.stack([params_pred[0], params_pred[1], params_pred[2], params_pred[3],
-                   tf.sqrt(tf.square(params_pred[4]) + tf.square(params_pred[5])),
-                   tf.atan2(params_pred[5], params_pred[4])])
+                   tf.sqrt(tf.square(params_pred[4]) + tf.square(params_pred[5] + epsilon)),
+                   tf.atan2(params_pred[5] + epsilon, params_pred[4] + epsilon)])
 
     #---data prep---
     observation_points = tf.constant(Dataset.points, dtype=tf.float32)
