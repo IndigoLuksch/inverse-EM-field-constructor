@@ -52,6 +52,37 @@ class Dataset:
         #---data normalisation---
         self.H_STD = 1000
 
+    def normalise_data(self, H_field, params):
+        """
+        normalise H field and parameters to [0, 1] range
+        works for batched or unbatched data
+        """
+        H_field_norm = H_field / self.H_STD
+
+        #check if batched
+        if len(params.shape) == 1:
+            #unbatched
+            params_norm = tf.stack([
+                (params[0] + config.AOI_CONFIG['x_dim']) / (2 * config.AOI_CONFIG['x_dim']),  # x: -30 to 30 -> 0 to 1
+                (params[1] + config.AOI_CONFIG['y_dim']) / (2 * config.AOI_CONFIG['y_dim']),  # y: -30 to 30 -> 0 to 1
+                (params[2] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # a: 0.1 to 5 -> 0 to 1
+                (params[3] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # b: 0.1 to 5 -> 0 to 1
+                (params[4] - config.MAGNET_CONFIG['M_min']) / (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']),  # Mr: 0.2 to 1.48 -> 0 to 1
+                (params[5] + np.pi) / (2 * np.pi),  # Mtheta: [-pi,pi] --> [0,1]
+            ])
+        else:
+            #batched
+            params_norm = tf.stack([
+                (params[:, 0] + config.AOI_CONFIG['x_dim']) / (2 * config.AOI_CONFIG['x_dim']),  # x: -30 to 30 -> 0 to 1
+                (params[:, 1] + config.AOI_CONFIG['y_dim']) / (2 * config.AOI_CONFIG['y_dim']),  # y: -30 to 30 -> 0 to 1
+                (params[:, 2] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # a: 0.1 to 5 -> 0 to 1
+                (params[:, 3] - config.MAGNET_CONFIG['dim_min']) / (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']),  # b: 0.1 to 5 -> 0 to 1
+                (params[:, 4] - config.MAGNET_CONFIG['M_min']) / (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']),  # Mr: 0.2 to 1.48 -> 0 to 1
+                (params[:, 5] + np.pi) / (2 * np.pi),
+            ], axis=1)
+
+        return H_field_norm, params_norm
+
     def visualise_random_sample(self, split='train', num_samples=1):
         '''visualises a random sample from the dataset at local_path
         uses polar coords for M'''

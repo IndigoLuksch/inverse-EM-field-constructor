@@ -51,6 +51,10 @@ if mode == 'train':
     train_ds = tf.data.Dataset.load(generator.local_path + "/train_ds")
     val_ds = tf.data.Dataset.load(generator.local_path + "/val_ds")
 
+    #normalise
+    train_ds = train_ds.map(generator.normalise_data, num_parallel_calls=tf.data.AUTOTUNE)
+    val_ds = val_ds.map(generator.normalise_data, num_parallel_calls=tf.data.AUTOTUNE)
+
     train_ds = train_ds.batch(config.TRAINING_CONFIG["batch_size"]).prefetch(tf.data.AUTOTUNE)
     val_ds = val_ds.batch(config.TRAINING_CONFIG["batch_size"]).prefetch(tf.data.AUTOTUNE)
 

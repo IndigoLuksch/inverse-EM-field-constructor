@@ -151,54 +151,70 @@ def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
 
     hybrid loss: linear combination of H field MSE and parameter MSE
     (sigmoid activation --> dimensions always +ve --> no need for negative dimension penalty)
-    
-    differences to custom_loss_cart: 
+
+    differences to custom_loss_cart:
     - params MSE calculated using magnetisation in polar coord
-    - params first converted to cartesian for H field MSE calculation 
+    - params first converted to cartesian for H field MSE calculation
     """
-
-    #---polar->cartesian coordinates for magnetisation---
-    params_true_polar = params_true
-    params_pred_polar = params_pred
-
-
-    params_true = tf.stack([params_true[:, 0],
-                            params_true[:, 1],
-                            params_true[:, 2],
-                            params_true[:, 3],
-                            params_true[:, 4]*tf.cos(params_true[:, 5]),
-                            params_true[:, 4]*tf.sin(params_true[:, 5])
-                            ], axis=1)
-    params_pred = tf.stack([params_pred[:,0],
-                            params_pred[:,1],
-                            params_pred[:,2],
-                            params_pred[:,3],
-                            params_pred[:, 4] * tf.cos(params_pred[:, 5]),
-                            params_pred[:, 4] * tf.sin(params_pred[:, 5])
-                            ], axis=1)
 
     #---data prep---
     observation_points = tf.constant(Dataset.points, dtype=tf.float32)
     batch_size = tf.shape(params_pred)[0]
     n_points = tf.shape(observation_points)[0]
 
-    #denormalise
-    params_true_denorm = tf.stack([
+    #save normalised polar params
+    params_true_polar = params_true
+    params_pred_polar = params_pred
+
+    #---denormalize polar coordinates FIRST---
+    # params are [x, y, a, b, Mr, Mtheta] each iin [0, 1]
+    params_true_polar_denorm = tf.stack([
         params_true[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],  # x: 0-1 -> -30 to 30
         params_true[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],  # y: 0-1 -> -30 to 30
-        params_true[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # a
-        params_true[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # b
-        params_true[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # Mx
-        params_true[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # My
+        params_true[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # a: 0-1 -> 0.1 to 5
+        params_true[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],  # b: 0-1 -> 0.1 to 5
+        params_true[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],  # Mr: 0-1 -> 0.2 to 1.48
+        params_true[:, 5] * (2 * np.pi) - np.pi,
     ], axis=1)
 
-    params_pred_denorm = tf.stack([
+    params_pred_polar_denorm = tf.stack([
         params_pred[:, 0] * (2 * config.AOI_CONFIG['x_dim']) - config.AOI_CONFIG['x_dim'],
         params_pred[:, 1] * (2 * config.AOI_CONFIG['y_dim']) - config.AOI_CONFIG['y_dim'],
         params_pred[:, 2] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
         params_pred[:, 3] * (config.MAGNET_CONFIG['dim_max'] - config.MAGNET_CONFIG['dim_min']) + config.MAGNET_CONFIG['dim_min'],
         params_pred[:, 4] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
-        params_pred[:, 5] * (config.MAGNET_CONFIG['M_max'] - config.MAGNET_CONFIG['M_min']) + config.MAGNET_CONFIG['M_min'],
+        params_pred[:, 5] * (2 * np.pi) - np.pi,
+    ], axis=1)
+
+    #---convert polar->cartesian using denorm values---
+    #Mr, Mtheta ---> Mx, My
+    Mr_true = params_true_polar_denorm[:, 4]
+    Mtheta_true = params_true_polar_denorm[:, 5]
+    Mx_true = Mr_true * tf.cos(Mtheta_true)
+    My_true = Mr_true * tf.sin(Mtheta_true)
+
+    Mr_pred = params_pred_polar_denorm[:, 4]
+    Mtheta_pred = params_pred_polar_denorm[:, 5]
+    Mx_pred = Mr_pred * tf.cos(Mtheta_pred)
+    My_pred = Mr_pred * tf.sin(Mtheta_pred)
+
+    #denormalised cartesian params [x, y, a, b, Mx, My]
+    params_true_denorm = tf.stack([
+        params_true_polar_denorm[:, 0],  # x
+        params_true_polar_denorm[:, 1],  # y
+        params_true_polar_denorm[:, 2],  # a
+        params_true_polar_denorm[:, 3],  # b
+        Mx_true,
+        My_true
+    ], axis=1)
+
+    params_pred_denorm = tf.stack([
+        params_pred_polar_denorm[:, 0],  # x
+        params_pred_polar_denorm[:, 1],  # y
+        params_pred_polar_denorm[:, 2],  # a
+        params_pred_polar_denorm[:, 3],  # b
+        Mx_pred,
+        My_pred
     ], axis=1)
 
     #---calculate true H field---
@@ -232,7 +248,7 @@ def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
     H_true = magnet_field_tf.compute_H_field_batch(observers_rel_true, dimensions_true_rep, polarizations_true_rep)
     H_true = tf.reshape(H_true, [batch_size, n_points, 3])
 
-    #normalise, clip
+    #normalise H
     H_true_normalized = H_true / Dataset.H_STD
     H_true_normalized = tf.clip_by_value(H_true_normalized, -100.0, 100.0)
 
@@ -264,7 +280,7 @@ def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
     H_pred = magnet_field_tf.compute_H_field_batch(observers_rel_pred, dimensions_pred_rep, polarizations_pred_rep)
     H_pred = tf.reshape(H_pred, [batch_size, n_points, 3])
 
-    #normalise, clip
+    # Normalize H fields to match input normalization
     H_pred_normalized = H_pred / Dataset.H_STD
     H_pred_normalized = tf.clip_by_value(H_pred_normalized, -100.0, 100.0)
 
@@ -273,7 +289,7 @@ def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
     physics_loss_per_sample = tf.reduce_mean(tf.square(H_true_normalized - H_pred_normalized), axis=[1, 2])
     physics_loss = tf.reduce_mean(physics_loss_per_sample)
 
-    #parameter loss: MSE between (normalised) parameters
+    #parameter loss: MSE between normalized parameters in [0, 1]
     param_mse = tf.reduce_mean(tf.square(params_true_polar - params_pred_polar))
 
     #combine for total loss
@@ -299,7 +315,7 @@ def compile_model(model, initial_lr):
 def create_callbacks():
     early_stopping = callbacks.EarlyStopping(
         monitor='val_loss',
-        patience=15,
+        patience=10,
         restore_best_weights=True,
         verbose=1
     )
