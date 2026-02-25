@@ -5,6 +5,7 @@ from keras import backend as K
 from tensorflow.keras.applications import ResNet50
 import numpy as np
 import tensorflow as tf
+import keras
 
 import config
 import data
@@ -145,6 +146,7 @@ def custom_loss_cart(params_true, params_pred):
     return total_loss
 
 #polar coords magnetisation
+@keras.saving.register_keras_serializable()
 def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
     """
     MOSTLY VIBE CODED
