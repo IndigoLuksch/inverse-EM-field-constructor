@@ -13,7 +13,9 @@ Approach:
 
 Uses a ResNet50 model (not pretrained) 
 
-Different parameter combinations may produce quite similar fields and parameters MSE loss is quite sensitive, so custom hybrid loss (linear combination of MSE of predicted parameters and MSE of H field resulting from predicted parameters) is used 
+Different parameter combinations may produce quite similar fields and parameters MSE loss is quite sensitive, so custom hybrid loss (linear combination of MSE of predicted parameters and MSE of H field resulting from predicted parameters) is used. 
+
+Magnetisation was defined in polar coordinates to reduce degeneracy in parameters (previously, if e.g. the magnet had high magnetic field strength along y axis, it could be either due to large y dimension or large y magnetisation. Now, the two are decoupled). 
 
 ## Results 
 
