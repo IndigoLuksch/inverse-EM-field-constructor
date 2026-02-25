@@ -13,13 +13,15 @@ Approach:
 
 Uses a ResNet50 model (not pretrained) 
 
-Different parameter combinations may produce quite similar fields and parameters MSE loss is quite sensitive, so custom hybrid loss (linear combination of MSE of predicted parameters and MSE of H field resulting from predicted parameters) is used 
+Different parameter combinations may produce quite similar fields and parameters MSE loss is quite sensitive, so custom hybrid loss (linear combination of MSE of predicted parameters and MSE of H field resulting from predicted parameters) is used. 
+
+Magnetisation was defined in polar coordinates to reduce degeneracy in parameters (previously, if e.g. the magnet had high magnetic field strength along y axis, it could be either due to large y dimension or large y magnetisation. Now, the two are decoupled). 
 
 ## Results 
 
 A ResNet50 model was trained on 60000 data points (cuboidal magnets in a 2D plane). 
 
-![val loss](scratch/val_loss.png "Training: validation loss")
+![val loss](scratch/val_loss2.png "Training: validation loss")
 
 *Results: regular MSE loss:*
 
@@ -39,6 +41,15 @@ A ResNet50 model was trained on 60000 data points (cuboidal magnets in a 2D plan
 - Mx magnetization - MAE: 11.849303% 
 - My magnetization - MAE: 12.219321%
 - _mean: 5.035%_
+
+*Results: hybrid loss and magnetisation in polar coordinates*
+- x position - MAE: 0.011311% 
+- y position - MAE: 0.011382% 
+- dimension a - MAE: 2.649466% 
+- dimension b - MAE: 2.693871% 
+- Mr magnetization - MAE: 15.195538% 
+- Mtheta magnetization - MAE: 0.158586% 
+- _mean: 3.453%_
 
 (The script was containerised using Docker and ready to run in Google Cloud, but GPUs were unavailable so I ended up running it locally but storing the dataset in Google Cloud.)
 
