@@ -116,7 +116,8 @@ def test_model(trials=1, iterations=5, visualise=False, use_generated_data=True,
     for _ in tqdm(range(trials)):
         # ---get magnetic field---
         if use_generated_data:
-            print("\n---Generating test data---")
+            if verbose:
+                print("\n---Generating test data---")
             # Generate random magnet parameters
             import random
 
@@ -133,10 +134,11 @@ def test_model(trials=1, iterations=5, visualise=False, use_generated_data=True,
             Mx_actual = Mr_actual * np.cos(Mtheta_actual)
             My_actual = Mr_actual * np.sin(Mtheta_actual)
 
-            print(f"Ground truth magnet parameters:")
-            print(f"  Position: ({x_actual:.2f}, {y_actual:.2f}) m")
-            print(f"  Dimensions: ({a_actual:.2f}, {b_actual:.2f}) m")
-            print(f"  Magnetization: Mr={Mr_actual:.3f} T, θ={Mtheta_actual:.3f} rad (Mx={Mx_actual:.3f}, My={My_actual:.3f}) T")
+            if verbose:
+                print(f"Ground truth magnet parameters:")
+                print(f"  Position: ({x_actual:.2f}, {y_actual:.2f}) m")
+                print(f"  Dimensions: ({a_actual:.2f}, {b_actual:.2f}) m")
+                print(f"  Magnetization: Mr={Mr_actual:.3f} T, θ={Mtheta_actual:.3f} rad (Mx={Mx_actual:.3f}, My={My_actual:.3f}) T")
 
             # Generate H field using magpylib
             magnet_actual = magpy.magnet.Cuboid(
@@ -154,11 +156,14 @@ def test_model(trials=1, iterations=5, visualise=False, use_generated_data=True,
             ])
             H_actual = (H_field / Dataset.H_STD).numpy()  # Normalize and convert to numpy
 
-            print("Test data generated")
+            if verbose:
+                print("Test data generated")
         else:
-            print("\n---Draw magnetic field---")
+            if verbose:
+                print("\n---Draw magnetic field---")
             H_actual = magnetic_field_painter.create_normalised_magnetic_field(grid_size=301)
-            print("Magnetic field created")
+            if verbose:
+                print("Magnetic field created")
         H = H_actual  # already normalised
 
         for i in range(iterations):
@@ -220,6 +225,17 @@ def test_model(trials=1, iterations=5, visualise=False, use_generated_data=True,
                 print(f"Iteration {i+1}: mae = {mae:.5f}")
 
     return maes
+
+scales = []
+results = []
+for scale in tqdm(np.arange(-10,10,0.05)):
+    result = test_model(scale=scale)[-1]
+    scales.append(scale)
+    results.append(result)
+plt.plot(scales, results)
+plt.xlabel("scale")
+plt.ylabel("mae")
+plt.show()
 
 
 
