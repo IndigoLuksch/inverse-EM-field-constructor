@@ -13,6 +13,56 @@ import magnet_field_tf
 
 Dataset = data.Dataset()
 
+
+class LogVarLossWeights(tf.keras.layers.Layer):
+    def __init__(self, name='uncertainty_weights', **kwargs):
+        '''initialise stuff'''
+        super().__init__(name=name, **kwargs)
+        #initialise vars to zero so all weights are ~1.0
+        self.log_var_physics = self.add_weight(
+            name='log_var_physics',
+            shape=(),
+            initializer=tf.constant_initializer(0.0),
+            trainable=True,
+        )
+
+        self.log_var_params = self.add_weight(
+            name='log_var_params',
+            shape=(),
+            initializer=tf.constant_initializer(0.0),
+            trainable=True,
+        )
+
+    def call(self, physics_loss, params_loss):
+        '''new loss function: weighted physics, params losses + regularisation'''
+        #precision = 1/sigma^2
+        precision_physics = tf.exp(-self.log_var_physics)
+        precision_params = tf.exp(-self.log_var_params)
+
+        #return losses weighted by precision, + regularisation term (prevents sigma blowing up)
+        return (precision_physics * physics_loss + self.log_var_physics + precision_params * params_loss + self.log_var_params)
+
+    def get_effective_weights(self):
+        '''for logging'''
+        return {
+            'physics_weight': tf.exp(-self.log_var_physics).numpy(),
+            'params_weight': tf.exp(-self.log_var_params).numpy(),
+            'physics_uncertainty': tf.exp(self.log_var_physics / 2).numpy(),
+            'params_uncertainty': tf.exp(self.log_var_params / 2).numpy()
+        }
+loss_weight_layer = LogVarLossWeights()
+
+
+class LogLossWeights(callbacks.Callback):
+    """Logs the learned loss weights after each epoch"""
+
+    def on_epoch_end(self, epoch, logs=None):
+        weights = loss_weight_layer.get_effective_weights()
+        print(f"\n  Physics weight: {weights['physics_weight']:.4f}, "
+              f"Params weight: {weights['params_weight']:.4f}")
+        print(f"  Physics σ: {weights['physics_uncertainty']:.4f}, "
+              f"Params σ: {weights['params_uncertainty']:.4f}")
+
 def create_model(input_shape=config.MODEL_CONFIG['input_shape'], output_dim=config.MODEL_CONFIG['output_dim']):
     '''
     Creates a ResNet50 model using model parameters from config
@@ -289,14 +339,13 @@ def custom_loss_polar(params_true, params_pred, epsilon=1e-7):
     #---compute losses---
     #physics loss: MSE between H_true_normalized and H_pred_normalized
     physics_loss_per_sample = tf.reduce_mean(tf.square(H_true_normalized - H_pred_normalized), axis=[1, 2])
-    physics_loss = tf.reduce_mean(physics_loss_per_sample)
+    physics_mse = tf.reduce_mean(physics_loss_per_sample)
 
     #parameter loss: MSE between normalized parameters in [0, 1]
     param_mse = tf.reduce_mean(tf.square(params_true_polar - params_pred_polar))
 
-    #combine for total loss
-    #ratio chosen so physics and param losses contribute roughly equally
-    total_loss = 0.05 * physics_loss + param_mse
+    #total loss uses learned weightings
+    total_loss = loss_weight_layer(physics_mse, param_mse)
 
     return total_loss
 
@@ -336,7 +385,10 @@ def create_callbacks():
     #terminate training if loss - NaN
     terminate_nan = callbacks.TerminateOnNaN()
 
-    return [early_stopping, csv_logger, reduce_lr, terminate_nan]
+    #monitor learned loss weights
+    log_weights = LogLossWeights()
+
+    return [early_stopping, csv_logger, reduce_lr, terminate_nan, log_weights]
 
 def train_model(model, train_dataset, val_dataset, initial_lr=0.1, prop_to_load=1.0):
     #calc steps for terminal progress bar display, adjusted for actual data loaded
@@ -367,6 +419,13 @@ def train_model(model, train_dataset, val_dataset, initial_lr=0.1, prop_to_load=
     model_path = f'{config.MODEL_DIR}/trained_model.keras'
     model.save(model_path)
     print(f"Model saved to {model_path}")
+
+    #save loss layer weights separately
+    loss_weights_path = f'{config.MODEL_DIR}/loss_weights.npz'
+    np.savez(loss_weights_path,
+             log_var_physics=loss_weight_layer.log_var_physics.numpy(),
+             log_var_params=loss_weight_layer.log_var_params.numpy())
+    print(f"Loss weights saved to {loss_weights_path}")
 
     #save history
     history_path = f'{config.LOG_DIR}/training_history.npz'
