@@ -1,5 +1,7 @@
 # Inverse EM field constructor
 
+![example](scratch/nice_example.png)
+
 Goal: 
 - construct an arrangement of magnets that produces a desired magnetic field
 
